@@ -13,3 +13,9 @@ public func levenshtein(_ a: String, _ b: String) -> Int {
     }
     return prev[b.count]
 }
+
+/// True when `levenshtein(a, b) <= limit`, with a cheap length check first.
+public func withinEditDistance(_ a: String, _ b: String, _ limit: Int) -> Bool {
+    guard limit >= 0, abs(a.count - b.count) <= limit else { return false }
+    return limit == 0 ? a == b : levenshtein(a, b) <= limit
+}

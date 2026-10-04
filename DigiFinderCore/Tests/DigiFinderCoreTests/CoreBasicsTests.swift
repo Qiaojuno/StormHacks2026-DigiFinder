@@ -64,10 +64,4 @@ final class CoreBasicsTests: XCTestCase {
         _ = q.push(SpeechLine(text: "old", priority: .narration, createdAt: 1))
         XCTAssertNil(q.next(now: 10))
     }
-
-    func testSessionStartAsksForGoal() {
-        var s = ShoppingSession(catalog: [:])
-        XCTAssertEqual(s.handle(.started), [.say("What are you looking for?", .guidance), .listen(maxSeconds: 10)])
-        XCTAssertEqual(s.state.step, .askingGoal)
-    }
 }

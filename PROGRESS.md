@@ -7,10 +7,12 @@ Read this first after a restart or compaction, then continue from "Next".
   give them a suggested commit message (summary + description) with no AI attribution lines.
 - **No AI-tool attribution or mentions** anywhere in the repo or in suggested commit messages. Before the owner pushes,
   search the repo (excluding `.git`, `.venv`, `build_out`, `.build`) for the assistant's name and scrub hits.
-- Because nothing is committed by agents, Wave 2 can't merge agent branches. Plan: each agent works in a
-  **directory copy** of the working tree (`../df-<name>`, made with rsync, excluding `.git`, `.venv`, `build_out`, `.build`),
-  builds there, and does not commit; the orchestrator rsyncs back only the agent's owned folders and appends its
-  CONTRACT_CHANGES.md entries.
+- Because nothing is committed by agents, Wave 2 can't merge agent branches. Each agent works in a
+  **directory copy** of the working tree at `$SCRATCH/df-<name>` (scratchpad, outside ~/Desktop: copies there would sit in the
+  lab1 repo and Desktop metadata breaks Simulator codesign), made with rsync excluding `.git`, `.venv`, `build_out`, `.build`,
+  `.swiftpm`, `xcuserdata`. Agents build with derived data `~/Library/Developer/Xcode/DerivedData/df-<name>` and never commit
+  (copies have no .git). The orchestrator rsyncs back only the agent's owned folders and appends its CONTRACT_CHANGES.md entries.
+  If the scratchpad is gone after a restart, re-create copies from the main tree.
 
 ## Naming and setup decisions
 - The app is **DigiFinder** (renamed from Item Finder at the owner's request). `implementation_plan.md` was updated:
@@ -72,11 +74,40 @@ xcodebuild -scheme DigiFinder -destination 'generic/platform=iOS Simulator' -der
 - [x] **Phase 1: Wave 1 done.** Package added by the owner; all three build checks green. Contracts frozen.
   Derived data must live outside ~/Desktop (Desktop file metadata breaks Simulator codesign: "detritus not allowed").
 - [x] Phase 2: data jobs done (see Data).
-- [ ] Phase 3: Wave 2 (8 module subagents)
+- [ ] Phase 3: Wave 2 (8 module subagents) — **in progress**
+  - Batch 1 (running): Core-logic, Core-session, Capture, Data
+    - Capture: **merged**, device + Simulator builds green. Adds `CaptureControl` (capability callback, thermal/rates,
+      `makeStreamB()` fan-out, debug snapshots) and `CaptureFactory.makeBest()`. `streamB` is single-consumer and
+      `onDepth` is a single closure: batch-2 agents must use `makeStreamB()` and chain onto `onDepth` (keep the previous
+      handler; Safety's work runs first, Perception's handler only stores the latest frame).
+    - Core-logic: **merged**, `swift test` 73/73 green. Adds `RequestRouter(…, synonyms:)` and `routeWithChange`
+      (CONTRACT_CHANGES: `Request.products` needs a GoalChange), `SpeechPriorityQueue.enqueue`, clock/TTC/dead-reckoning helpers.
+    - Data: **merged**, device + Simulator builds green. Adds `DataGoalResolver(products:catalog:)` with `goals(for:)`
+      (router productSearch) and `candidates(for:limit:)`; `Catalog.synonyms`; `ProductMemory(directory:)`; hint threshold 0.4 (verify on device).
+    - Core-session: **merged**. Full Core suite 150/150 green; device + Simulator builds green. `.tick` is an absolute
+      monotonic clock (first tick = reference); runner rules in CONTRACT_CHANGES "Flow runtime semantics". Adds
+      `ShoppingSession(catalog:destinations:)`. Own-wording lines to review: "Push door." / "Pull door.",
+      "Okay, still looking for X.", "I can't see much around you.", mic-denied line.
+  - Batch 2 (running): Safety, Perception, Voice-Feedback-Network-System (copies made after Capture/Core-logic/Data merges)
+    and UI (copy made after Core-session merge). Notes they were briefed with:
+    use `(frames as? CaptureControl)?.makeStreamB()` for Stream B and chain onto `frames.onDepth` (keep the previous handler);
+    Perception owns YOLO (`ObjectDetectionService`), Safety only reads `detector.latest`; Safety also emits
+    `.positioning(.phoneFlipped)` (max once per 30 s, not in shelf mode); Perception adds `remember(_ p: ProductInfo)` that saves
+    the last confirmed crop to ProductMemory (runner calls it for `Effect.remember`); router search = `DataGoalResolver.goals(for:)`.
 - [ ] Phase 4: Wave 3 integration
 - [ ] Phase 5: review and hand-off
 
+## Wave 2 decisions given to agents
+- Test ownership: Core-logic owns `RouterTests.swift`, `CoreBasicsTests.swift` and new `Matching*/Geometry*/Speech*/Routing*Tests.swift`;
+  Core-session owns `SessionStartTests.swift` and new `Session*Tests.swift`.
+- The session has no database: it emits `.setTarget(goal, candidates: [], destination:)`; the runner (Wave 3) fills the
+  candidates from the database before calling perception.
+- Data also provides the router's product search: a goal resolver (query → `[Goal]` with category from the database,
+  brand/variant/form only from the user's words) and `candidates(for: Goal)`, falling back to `extraProducts` without the database.
+- Capture also provides a factory that picks LiDAR+ultra-wide → ultra-wide → wide → unavailable and returns the matching
+  FrameSource + DepthProvider, for `AppEnvironment.live()` (Wave 3).
+
 ## Next
-1. Owner: File → Add Package Dependencies… → Add Local… → `DigiFinderCore` → add to target DigiFinder; review and commit.
-2. Run the three build checks until green; then contracts are frozen.
-3. Phase 3, batch 1: Core-logic, Core-session, Capture, Data (directory copies, no commits).
+1. When a batch-1 agent reports: rsync its owned folders back, append CONTRACT_CHANGES entries, run the build checks.
+2. Then batch 2. Tell the owner when Capture + Safety are both in and building (phone danger test).
+3. Phase 4 (Wave 3 integration), Phase 5 (review). Suggest a commit message to the owner after each phase.

@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreGraphics
 import CoreVideo
+import Foundation
 import simd
 import DigiFinderCore
 
@@ -89,5 +90,26 @@ enum CameraGeometry {
 
     static func simdMatrix(_ m: Mat3) -> simd_float3x3 {
         simd_float3x3(rows: [SIMD3(m.m[0], m.m[1], m.m[2]), SIMD3(m.m[3], m.m[4], m.m[5]), SIMD3(m.m[6], m.m[7], m.m[8])])
+    }
+
+    /// Pinhole intrinsics from the horizontal field of view of the landscape sensor, principal point centered.
+    /// Only for frames that carry no calibration data.
+    static func nominalIntrinsics(width: Int, height: Int, horizontalFOVDegrees: Float) -> simd_float3x3 {
+        let f = Float(width) / 2 / tan(horizontalFOVDegrees * .pi / 360)
+        return simd_float3x3(SIMD3(f, 0, 0), SIMD3(0, f, 0), SIMD3(Float(width) / 2, Float(height) / 2, 1))
+    }
+
+    /// Stream B upright-portrait point → depth-map pixel through both intrinsics (lenses co-located).
+    /// `KB` is relative to the Stream B buffer (`widthB`×`heightB` sensor pixels), `KD` to the depth map.
+    static func depthPixel(forStreamB p: NormPoint, KB: simd_float3x3, widthB: Int, heightB: Int, KD: simd_float3x3) -> CGPoint? {
+        guard widthB > 0, heightB > 0, KB[0][0] > 0, KB[1][1] > 0 else { return nil }
+        let s = Geometry.toSensorPixels(p, width: Double(widthB), height: Double(heightB))
+        let rx = (Float(s.x) - KB[2][0]) / KB[0][0], ry = (Float(s.y) - KB[2][1]) / KB[1][1]
+        return CGPoint(x: CGFloat(KD[0][0] * rx + KD[2][0]), y: CGFloat(KD[1][1] * ry + KD[2][1]))
+    }
+
+    /// Distance from the camera along the viewing ray of depth pixel (u, v) at depth `z`.
+    static func range(u: Float, v: Float, z: Float, K: simd_float3x3) -> Float {
+        simd_length(unproject(u: u, v: v, z: z, K: K))
     }
 }
