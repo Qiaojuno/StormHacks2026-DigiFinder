@@ -83,6 +83,12 @@ public enum SessionEvent: Equatable {
     /// ("Coffee sign at 10 o'clock."). Spoken as guidance in Entrance / FindAisle / InAisle only, when it differs
     /// from the last hint and at most every ~8 s; dropped while the user talks, an answer is pending or stopped.
     case searchHint(String)
+    /// On-device text reader (owner decision; YOLO has no wet-floor-sign class): "wet floor" / "caution" read while
+    /// walking, at this clock position. One vibration + "Wet floor sign, N o'clock.", once per ~20 s.
+    case wetFloorSign(clock: Int)
+    /// Gemini item finder: a lot of people close around the user. "Lot of people around you, be careful." at most
+    /// once per ~60 s; waits for an alert like other Gemini lines.
+    case crowded
     /// ~2 Hz.
     case motion(yawDegrees: Double, steps: Int, walking: Bool)
     case positioning(PositioningHint)
@@ -126,6 +132,8 @@ public enum Effect: Equatable {
     /// The stream (owner decision): on = camera, danger, perception and prompts run; off = everything stops, danger
     /// included, and all speech is cut. Volume up / the record button turn it on; volume down / stop turn it off.
     case setStreaming(Bool)
+    /// One danger vibration (no speech): the wet floor sign.
+    case buzz
 }
 // "Recalculate" is session-internal: clear the last-spoken de-dupe and re-derive the prompt from the next observations.
 

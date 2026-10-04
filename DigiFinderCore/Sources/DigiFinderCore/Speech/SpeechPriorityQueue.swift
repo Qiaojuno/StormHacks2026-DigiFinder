@@ -66,6 +66,7 @@ public struct SpeechPriorityQueue {
     public mutating func enqueue(_ line: SpeechLine) -> SpeechDecision {
         if line.priority == .narration && verbosity == .brief { return .dropped }
         if current?.text == line.text || pending.contains(where: { $0.text == line.text }) { return .dropped }
+        if line.priority == .danger { restampReplies(line.createdAt) }
         guard let c = current else { current = line; return .speakNow(line) }
         if line.priority > c.priority {
             if c.priority == .stairs || c.priority == .reply {
@@ -83,15 +84,25 @@ public struct SpeechPriorityQueue {
     /// Lines created with or after the line that just finished (below stairs) only waited for it to play, so they
     /// aren't stale: "Got it: … Put it in your cart." is followed by "Next: milk." however long the first line took.
     public mutating func next(now: Double) -> SpeechLine? {
+        // Lines created with or after the line that just finished only waited for it. Replies interrupted by an alert
+        // are restamped to the alert, so they play after it however long it (or the next alert) took.
         let chainedFrom = current.flatMap { $0.priority < .stairs ? $0.createdAt : nil }
+        let alertAt = current.flatMap { $0.priority == .danger ? $0.createdAt : nil }
         pending.removeAll { line in
             guard line.priority < .stairs, now - line.createdAt > staleAfter else { return false }
             if let t = chainedFrom, line.createdAt >= t { return false }
+            if let t = alertAt, line.priority == .reply, line.createdAt >= t { return false }
             return true
         }
         current = pending.isEmpty ? nil : pending.removeFirst()
         if current?.priority == .narration && verbosity == .brief { return next(now: now) }
         return current
+    }
+
+    /// An alert arrived: waiting replies (Gemini answers) wait for it instead of going stale (owner decision).
+    private mutating func restampReplies(_ t: Double) {
+        for i in pending.indices where pending[i].priority == .reply { pending[i].createdAt = max(pending[i].createdAt, t) }
+        if var c = current, c.priority == .reply { c.createdAt = max(c.createdAt, t); current = c }
     }
 
     /// The current line finished playing: same as `next(now:)`.

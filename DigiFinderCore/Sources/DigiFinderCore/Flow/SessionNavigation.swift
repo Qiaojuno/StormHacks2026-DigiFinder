@@ -568,18 +568,43 @@ extension ShoppingSession {
         }
     }
 
-    /// Not a store: "Turn slowly." every ~15 s; ~60 s with no sighting → next goal.
+    /// Gemini-guided search. Owner decisions: in a grocery store it never gives up (elsewhere ~60 s with no sighting →
+    /// "I couldn't find X."). Every ~15 s without a sighting: "Stop and look around. I need context."; once the user
+    /// has stood still ~4 s (two Gemini scans): "Keep going." A sighting answers it instead.
     mutating func nearbyTimers() {
         let now = state.now
         let anchor = max(state.stepStartedAt, state.itemSeenAt ?? -Double.infinity, state.placeDecidedAt ?? -Double.infinity)
-        if now - anchor >= SessionTuning.nearbyGiveUp, let g = state.goal {
+        let inStore = (state.placeOverride ?? state.place) == .store
+        if !inStore, now - anchor >= SessionTuning.nearbyGiveUp, let g = state.goal {
+            state.marks.contextAskedAt = nil
             announce(SessionPhrases.notFoundNearby(name(g)))
             out.append(.chime(.done))
             advanceToNext()
             return
         }
+        if let asked = state.marks.contextAskedAt {
+            if state.isWalking {
+                state.marks.contextStillSince = nil
+                guard now - asked >= SessionTuning.contextReask else { return }
+                if guide(SessionPhrases.needContext) { state.marks.contextAskedAt = now }
+                return
+            }
+            let still = state.marks.contextStillSince ?? now
+            state.marks.contextStillSince = still
+            guard now - still >= SessionTuning.contextStill else { return }
+            if guide(SessionPhrases.keepGoing) {
+                state.marks.contextAskedAt = nil
+                state.marks.contextStillSince = nil
+                state.marks.lastPointCueAt = now
+            }
+            return
+        }
         let last = max(state.marks.lastPointCueAt ?? -Double.infinity, anchor)
-        if now - last >= SessionTuning.nearbyPrompt, guide(SessionPhrases.turnSlowly) { state.marks.lastPointCueAt = now }
+        if now - last >= SessionTuning.nearbyPrompt, guide(SessionPhrases.needContext) {
+            state.marks.lastPointCueAt = now
+            state.marks.contextAskedAt = now
+            state.marks.contextStillSince = nil
+        }
     }
 }
 
@@ -590,6 +615,8 @@ extension ShoppingSession {
         guard let g = state.goal, [.entrance, .findAisle, .inAisle].contains(state.step) else { return }
         noteEvidence()
         state.itemSeenAt = state.now
+        state.marks.contextAskedAt = nil                    // the sighting is the context: no "Keep going."
+        state.marks.contextStillSince = nil
         let ahead = clock == 12 || clock == 11 || clock == 1
         if ahead, let d = distance, d <= SessionTuning.reachMeters {
             state.itemClock = clock

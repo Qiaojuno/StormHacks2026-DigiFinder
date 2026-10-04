@@ -45,6 +45,8 @@ final class SafetyController: SafetyService, @unchecked Sendable {
     private let stairs = StairsDetector()
     private let boxes = SafetyTracker()
     private var policy = SafetyAlertPolicy()
+    private var table = TableAlertRule()
+    private var barrier = BarrierAlertRule()
     /// Waiting for the path to open after an alert (lane only).
     private var clearWatch: (since: Double?, until: Double)?
     /// The active alert vibrated (the 2 s repeat pulse only follows a vibrating alert).
@@ -122,9 +124,23 @@ final class SafetyController: SafetyService, @unchecked Sendable {
     private var active = true
     private var isActive: Bool { activeLock.lock(); defer { activeLock.unlock() }; return active }
 
+    /// People YOLO sees right now (crowd damping in the general profile).
+    private static let personLabels: Set<String> = ["person", "man", "woman", "boy", "girl"]
+
+    static func people(_ detections: [Detection]) -> Int {
+        detections.filter { $0.confidence >= 0.4 && Self.personLabels.contains($0.label.lowercased()) }.count
+    }
+
+    func setProfile(_ p: ThreatProfile) {
+        lane.withLock {
+            danger.profile = p
+            policy.cooldown = p.cooldown
+        }
+    }
+
     func setActive(_ on: Bool) {
         activeLock.lock(); active = on; activeLock.unlock()
-        if !on { lane.withLock { policy.reset(); danger.reset(); clearWatch = nil } }
+        if !on { lane.withLock { policy.reset(); danger.reset(); table.reset(); barrier.reset(); clearWatch = nil } }
     }
 
     private func handle(_ f: DepthFrame) {
@@ -137,6 +153,7 @@ final class SafetyController: SafetyService, @unchecked Sendable {
         let t = f.time.isValid && f.time.seconds.isFinite ? f.time.seconds : ProcessInfo.processInfo.systemUptime
 
         var snap = SafetyDebugSnapshot(source: .lidar, time: t, walking: walking, rotationRate: rotation)
+        snap.gravityY = gravity.y
         // Phase 1, danger only: it's the only part with a latency budget, so its haptics fire before stairs and
         // the flipped check run (§0: depth frame → haptic in < 50 ms).
         var pts: [Vec3] = []
@@ -150,7 +167,7 @@ final class SafetyController: SafetyService, @unchecked Sendable {
             let lens = SafetyStreamBLens.make(streamB: frames.streamBCalibration, depth: f.depth)
             let latest = detector.latest
             var r = danger.evaluate(pts, t: t, rotationRate: rotation, walking: walking,
-                                    floorY: stairs.floorY) { o in
+                                    floorY: stairs.floorY, peopleInView: Self.people(latest)) { o in
                 if t - self.lastDebugLabelTime >= Self.debugLabelInterval || t < self.lastDebugLabelTime {
                     self.lastDebugLabelTime = t
                     self.debugLabel = SafetyLabeler.label(points: o.points, basis: basis, lens: lens, detections: latest)
@@ -163,7 +180,49 @@ final class SafetyController: SafetyService, @unchecked Sendable {
                 let onKnownStairs = stairs.latest.map { $0.up && abs($0.distance - o.distance) < Self.stairsDangerMargin } ?? false
                 if isStairsLabel || onKnownStairs { r.emergency = false }
             }
-            if r.emergency, let o = r.obstacle, policy.wantsAlert(label: debugLabel.label, x: o.x, t: t) {
+            // Demo (owner decision): tables in the path while walking, checked lower down, only while YOLO sees one.
+            var tableHit: GeometryObstacle?
+            let tableCorridor = TableAlertRule.corridor(floorY: stairs.floorY)
+            let seesTable = walking && !r.emergency
+                && latest.contains { $0.confidence >= 0.4 && TableAlertRule.isTable($0.label) }
+            let low = seesTable ? corridorObstacle(pts, c: tableCorridor) : nil
+            let lowLabel = low.map { SafetyLabeler.label(points: $0.points, basis: basis, lens: lens, detections: latest).label }
+            let rotating = abs(rotation) >= Self.maxRotation || !rotation.isFinite
+            let tableBefore = table.lastSeen
+            if table.update(t: t, walking: walking, rotating: rotating, obstacle: low, label: lowLabel) {
+                tableHit = TableAlertRule.isTable(lowLabel) ? low : tableBefore   // vanished below view: last place
+            }
+            // Fences / barricades (owner decision): across the path at waist height, open above. Not the table YOLO
+            // names (the table rule has it), not stairs, not a cart or person.
+            var found: GeometryObstacle?
+            if !walking { snap.barrierReason = "standing" }
+            else if r.emergency { snap.barrierReason = "danger alert running" }
+            else if tableHit != nil { snap.barrierReason = "table alert" }
+            else if stairs.latest != nil { snap.barrierReason = "stairs ahead" }
+            else {
+                let (b, why) = BarrierAlertRule.check(pts, floorY: stairs.floorY)
+                snap.barrierReason = why
+                if let b {
+                    let label = SafetyLabeler.label(points: b.points, basis: basis, lens: lens, detections: latest).label
+                    let name = label.lowercased()
+                    if TableAlertRule.isTable(label) || ThreatTuning.movers.contains(where: { name.contains($0) }) {
+                        snap.barrierReason = "labeled \(label)"
+                    } else {
+                        found = b
+                    }
+                }
+            }
+            let barrierHit = barrier.update(t: t, walking: walking, rotating: rotating, barrier: found) ? found : nil
+
+            if let (o, name) = tableHit.map({ ($0, "Table") }) ?? barrierHit.map({ ($0, "Barrier") }) {
+                policy.didAlert(label: name, x: o.x, t: t)
+                alertVibrated = false                          // one vibration only, no 2 s repeat
+                let steer = steerDirection(pts, obstacleX: o.x, obstacleZ: o.distance, corridor: tableCorridor,
+                                           alwaysClock: name == "Barrier")
+                out.append(.danger(label: name, steer: steer, distance: nil, vibrate: true))
+                snap.lastAlert = alertPhrase(label: name, steer: steer)
+                clearWatch = nil                               // the danger corridor can't see it
+            } else if r.emergency, let o = r.obstacle, policy.wantsAlert(label: debugLabel.label, x: o.x, t: t) {
                 policy.didAlert(label: debugLabel.label, x: o.x, t: t)
                 // Only a high threat (something moving toward the user) vibrates; overhead obstacles are spoken only.
                 let vibrate = r.threat == .approaching

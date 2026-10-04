@@ -1,15 +1,15 @@
 import XCTest
 @testable import DigiFinderCore
 
-/// Owner decisions: the app opens stopped and silent apart from one hint; the first volume up starts the stream,
-/// records, and runs the grocery check; the place line follows the request recorded with it, once per app open.
+/// Owner decisions: the app opens stopped and silent apart from one hint; volume down starts the stream and runs the
+/// grocery check; volume up only records a request. The place is never announced; checked once per app open.
 final class SessionStartTests: XCTestCase {
     private let coffee = Goal(product: "coffee", category: "coffee")
 
     func testAppOpensStoppedWithOneHint() {
         var s = ShoppingSession(catalog: [:])
         let e = s.handle(.started)
-        XCTAssertEqual(said(e), ["Press volume up to start."])
+        XCTAssertEqual(said(e), ["Press volume down to start."])
         XCTAssertTrue(e.contains(.setStreaming(false)), "camera, danger and checks stay off")
         XCTAssertFalse(e.contains(.classifyPlace), "no photos until the user starts")
         XCTAssertFalse(e.contains(.listen))
@@ -18,14 +18,18 @@ final class SessionStartTests: XCTestCase {
         for i in 1...60 { XCTAssertEqual(said(s.handle(.tick(Double(i)))), []) }
     }
 
-    func testFirstVolumeUpStartsTheStreamRecordsAndChecksThePlace() {
+    func testVolumeDownStartsTheStreamAndChecksThePlaceVolumeUpRecords() {
         var s = ShoppingSession(catalog: [:])
         _ = s.handle(.started)
-        let up = s.handle(.talkPressed)
-        XCTAssertTrue(up.contains(.setStreaming(true)))
-        XCTAssertTrue(up.contains(.listen))
-        XCTAssertTrue(up.contains(.classifyPlace), "photos go to Gemini while the user talks")
+        XCTAssertEqual(said(s.handle(.talkPressed)), ["Press volume down to start."], "volume up only asks")
+        XCTAssertFalse(s.state.streaming)
+        let down = s.handle(.donePressed)
+        XCTAssertTrue(down.contains(.setStreaming(true)))
+        XCTAssertTrue(down.contains(.classifyPlace), "photos go to Gemini when the stream starts")
+        XCTAssertFalse(down.contains(.listen))
+        XCTAssertEqual(said(down), ["Started. Volume up to ask."])
         XCTAssertTrue(s.state.streaming)
+        XCTAssertTrue(s.handle(.talkPressed).contains(.listen))
         let a = s.handle(.placeClassified(PlaceAnswer(grocery: true, confidence: 0.92, scene: "supermarket aisle")))
         XCTAssertEqual(said(a), [], "held until the request is handled")
         XCTAssertEqual(s.state.place, .store)
@@ -38,6 +42,7 @@ final class SessionStartTests: XCTestCase {
     func testLoadingThenNowLookingFor() {
         var s = ShoppingSession(catalog: [:])
         _ = s.handle(.started)
+        _ = s.handle(.donePressed)
         _ = s.handle(.talkPressed)
         XCTAssertEqual(said(s.handle(.routed(.product(coffee, .unspecified)))).first, "Loading.")
         let a = s.handle(.placeClassified(PlaceAnswer(grocery: false, confidence: 0.8, scene: "University library")))
@@ -49,17 +54,19 @@ final class SessionStartTests: XCTestCase {
     func testCheckedOncePerAppOpen() {
         var s = ShoppingSession(catalog: [:])
         _ = s.handle(.started)
+        _ = s.handle(.donePressed)
         _ = s.handle(.talkPressed)
         _ = s.handle(.placeClassified(PlaceAnswer(grocery: true, confidence: 0.9, scene: "supermarket")))
         _ = s.handle(.notUnderstood(noisy: false))
         _ = s.handle(.donePressed)                                         // stop
-        XCTAssertFalse(s.handle(.talkPressed).contains(.classifyPlace), "not again after a stop")
+        XCTAssertFalse(s.handle(.donePressed).contains(.classifyPlace), "not again after a restart")
         XCTAssertEqual(s.state.place, .store)
     }
 
     func testLowConfidenceAsksOnceMoreThenUsesGeneral() {
         var s = ShoppingSession(catalog: [:])
         _ = s.handle(.started)
+        _ = s.handle(.donePressed)
         _ = s.handle(.talkPressed)
         let first = s.handle(.placeClassified(PlaceAnswer(grocery: false, confidence: 0.5, scene: "hallway")))
         XCTAssertEqual(first, [.classifyPlace], "3 new photos, quietly")
@@ -73,7 +80,7 @@ final class SessionStartTests: XCTestCase {
         var s = ShoppingSession(catalog: [:])
         s.setOnlineHelp(false)
         _ = s.handle(.started)
-        XCTAssertFalse(s.handle(.talkPressed).contains(.classifyPlace))
+        XCTAssertFalse(s.handle(.donePressed).contains(.classifyPlace))
         XCTAssertEqual(s.state.place, .general)
         XCTAssertEqual(said(s.handle(.routed(.product(coffee, .unspecified)))).first, "Looking for coffee.")
     }
@@ -82,6 +89,7 @@ final class SessionStartTests: XCTestCase {
         var s = ShoppingSession(catalog: [:])
         _ = s.handle(.tick(0))
         _ = s.handle(.started)
+        _ = s.handle(.donePressed)
         _ = s.handle(.talkPressed)
         _ = s.handle(.notUnderstood(noisy: false))
         var lines: [String] = []
@@ -95,7 +103,7 @@ final class SessionStartTests: XCTestCase {
         var m = ShoppingSession(catalog: [:])
         _ = m.setNearbyMode(true)
         _ = m.handle(.started)
-        XCTAssertFalse(m.handle(.talkPressed).contains(.classifyPlace))
+        XCTAssertFalse(m.handle(.donePressed).contains(.classifyPlace))
         XCTAssertEqual(m.state.placeOverride, .general)
     }
 

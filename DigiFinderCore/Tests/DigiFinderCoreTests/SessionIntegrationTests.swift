@@ -54,7 +54,7 @@ final class SessionIntegrationTests: XCTestCase {
         h.session.setDistanceInSteps(true)
         h.send(.started)
         let s = h.send(.stairs(StairsObservation(up: true, distance: 2.8, steps: 8)))
-        XCTAssertEqual(said(s).first, "Stairs going up, about 8 steps, 4 steps away, 12 o'clock.")
+        XCTAssertEqual(said(s).first, "Stairs up, about 8 steps, 4 steps away.")
     }
 
     func testVerbositySetting() {

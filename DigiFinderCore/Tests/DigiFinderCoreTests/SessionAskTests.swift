@@ -19,7 +19,7 @@ final class SessionAskTests: XCTestCase {
 
         let answer = "The label says gluten free. Check with staff to confirm."
         let a = h.send(.assistAnswer(say: answer, find: nil))
-        XCTAssertEqual(said(a, .reply), [answer])
+        XCTAssertEqual(said(a, .reply), ["The label says gluten free. Check with staff."], "cut to 8 words")
         XCTAssertFalse(h.state.askPending)
         XCTAssertEqual(h.state.step, .confirm)
         XCTAssertEqual(h.state.work, SessionFixtures.holdUpWork)
@@ -43,7 +43,7 @@ final class SessionAskTests: XCTestCase {
         h.startGoal(SessionFixtures.coffee)
         h.send(.routed(.question("what does this sign say")))
         XCTAssertEqual(said(h.advance(7.5)), [])
-        XCTAssertEqual(said(h.advance(0.5)), ["I can't answer that offline. I can still find products, checkout, or staff."])
+        XCTAssertEqual(said(h.advance(0.5)), ["Can't answer that offline."])
         XCTAssertEqual(h.state.step, .findAisle)
         XCTAssertFalse(h.state.askPending)
         XCTAssertEqual(said(h.send(.assistAnswer(say: "Late.", find: nil))), [], "late answers are dropped")
@@ -54,7 +54,7 @@ final class SessionAskTests: XCTestCase {
         h.startGoal(SessionFixtures.coffee)
         h.send(.routed(.question("how much is this")))
         XCTAssertEqual(said(h.send(.assistAnswer(say: nil, find: nil))),
-                       ["I can't answer that offline. I can still find products, checkout, or staff."])
+                       ["Can't answer that offline."])
         h.send(.unmatched("blorp", noisy: false))
         XCTAssertEqual(said(h.send(.assistAnswer(say: nil, find: nil))), ["I didn't catch that. Say the product name."])
     }
@@ -63,11 +63,11 @@ final class SessionAskTests: XCTestCase {
         var h = SessionHarness()
         h.startGoal(SessionFixtures.coffee)
         let e = h.send(.routed(.question("is this gluten free")))
-        XCTAssertEqual(said(e), ["I can't answer that offline. I can still find products, checkout, or staff."])
+        XCTAssertEqual(said(e), ["Can't answer that offline."])
         XCTAssertFalse(e.contains(where: isAssist))
         XCTAssertEqual(h.state.step, .findAisle)
         XCTAssertEqual(said(h.send(.unmatched("blorp", noisy: false))), ["I didn't catch that. Say the product name."])
-        XCTAssertEqual(said(h.send(.unmatched("blorp", noisy: true))), ["Sorry, I didn't catch that. It's noisy here."])
+        XCTAssertEqual(said(h.send(.unmatched("blorp", noisy: true))), ["Didn't catch that. Too noisy."])
     }
 
     func testGuidanceWaitsDuringAskAndArrivalReplaysAfter() {
@@ -77,7 +77,7 @@ final class SessionAskTests: XCTestCase {
         XCTAssertEqual(said(h.send(.signs([SessionFixtures.coffeeSign]))), [])
         XCTAssertEqual(said(h.send(.arrivedAtAisle(clock: 9))), [])
         let a = h.send(.assistAnswer(say: "It says coffee and tea.", find: nil))
-        XCTAssertEqual(said(a), ["It says coffee and tea.", "Stop. Aisle 6 is at 9 o'clock."])
+        XCTAssertEqual(said(a), ["It says coffee and tea.", "Stop. Aisle 6, 9 o'clock."])
         XCTAssertEqual(h.state.step, .findAisle)
     }
 

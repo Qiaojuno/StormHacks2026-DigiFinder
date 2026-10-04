@@ -174,9 +174,11 @@ extension ShoppingSession {
         state.goalEpoch += 1
         out.append(.setTarget(nil, candidates: [], destination: nil))
         enter(.idle)                                       // keeps the current aisle for the next item
-        state.askingNext = true
-        state.askingNextAt = state.now
-        announce(SessionPhrases.whatsNext)
+        // Owner decision: no "What's next?" and no follow-up: just say how to start another search. The stream
+        // (camera, obstacle detection) stays on.
+        state.askingNext = false
+        state.askingNextAt = nil
+        announce(SessionPhrases.pressForAnother)
     }
 
     // MARK: Unknown items, questions and unmatched words: Gemini when online, else offline (§5.2, §5.11)
@@ -225,7 +227,7 @@ extension ShoppingSession {
         }
         state.askPending = false
         emitWork()
-        if !line.isEmpty { reply(line) }
+        if !line.isEmpty { reply(SessionPhrases.capWords(line)) }          // owner rule: ≤ 8 words
         if let g = find {
             applyGoal(g, a.change, announce: false)
         } else if a.kind == .unknownItem {

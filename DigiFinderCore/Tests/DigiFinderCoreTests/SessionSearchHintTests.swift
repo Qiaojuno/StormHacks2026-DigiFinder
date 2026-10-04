@@ -113,6 +113,6 @@ final class SessionSearchHintTests: XCTestCase {
         household.startGoal(phone)
         XCTAssertEqual(said(household.send(.itemSeen(clock: 3, distance: 2.5))), ["Phone at 3 o'clock, about 3 meters."])
         let reach = household.send(.itemSeen(clock: 12, distance: 0.8))
-        XCTAssertEqual(said(reach).first, "Phone is right in front of you, within reach.")
+        XCTAssertEqual(said(reach).first, "Phone, within reach.")
     }
 }

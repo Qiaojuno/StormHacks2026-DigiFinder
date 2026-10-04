@@ -8,7 +8,7 @@ final class SessionSystemTests: XCTestCase {
     func testFindStaff() {
         var h = SessionHarness()
         let e = h.send(.routed(.destination(.customerService)))
-        XCTAssertEqual(said(e), ["I'll take you to customer service. You can also ask anyone nearby."])
+        XCTAssertEqual(said(e), ["Going to customer service."])
         XCTAssertTrue(e.contains(.setTarget(nil, candidates: [], destination: .customerService)))
         XCTAssertEqual(h.state.step, .findAisle, "destinations search inside FindAisle")
         XCTAssertEqual(h.state.destination, .customerService)
@@ -25,7 +25,7 @@ final class SessionSystemTests: XCTestCase {
         h.send(.routed(.destination(.checkout)))
         XCTAssertEqual(said(h.send(.routed(.destination(.checkout)))), ["Going to checkout."])
         let e = h.advance(45)
-        XCTAssertEqual(said(e), ["I can't see any signs. Turn slowly.", "I can't find it. Ask anyone nearby for help."])
+        XCTAssertEqual(said(e), ["I can't see any signs. Turn slowly.", "Can't find it. Ask someone nearby."])
     }
 
     // MARK: Entrance (P1)
@@ -40,7 +40,7 @@ final class SessionSystemTests: XCTestCase {
         XCTAssertEqual(h.state.step, .entrance)
 
         let p = h.send(.entrancePicked(EntrancePick(x: 0.9, kind: .revolving, cartCorralX: 0.5)))
-        XCTAssertEqual(said(p), ["Entrance at 1 o'clock. It's a revolving door. Go slowly.", "Cart corral at 12 o'clock."])
+        XCTAssertEqual(said(p), ["Entrance at 1 o'clock. Revolving, go slowly.", "Cart corral at 12 o'clock."])
         XCTAssertEqual(said(h.send(.doors([DoorObservation(clock: 1, distance: 12)]))), [])
         XCTAssertEqual(said(h.send(.doors([DoorObservation(clock: 1, distance: 7.2)]))), ["Entrance ahead, about 7 meters, 1 o'clock."])
         XCTAssertEqual(said(h.send(.doors([DoorObservation(clock: 12, distance: 6)]))), [], "announced once")
@@ -66,13 +66,13 @@ final class SessionSystemTests: XCTestCase {
         XCTAssertFalse(h.send(.outside(true)).contains(.pickEntrance))
         h.startGoal(SessionFixtures.coffee)
         let doors = [DoorObservation(clock: 1, distance: 8), DoorObservation(clock: 11, distance: 15)]
-        XCTAssertEqual(said(h.send(.doors(doors))), ["Door at 1 o'clock, about 8 meters. I can't see an entrance sign."])
+        XCTAssertEqual(said(h.send(.doors(doors))), ["Door at 1 o'clock, about 8 meters."])
 
         var exit = SessionHarness()
         exit.send(.outside(true))
         exit.startGoal(SessionFixtures.coffee)
         let labeled = [DoorObservation(clock: 12, distance: 3, label: .exit), DoorObservation(clock: 10, distance: 6)]
-        XCTAssertEqual(said(exit.send(.doors(labeled))), ["This door says exit. Another door at 10 o'clock, about 6 meters."])
+        XCTAssertEqual(said(exit.send(.doors(labeled))), ["Exit door. Try 10 o'clock, about 6 meters."])
         XCTAssertEqual(said(exit.send(.doors([DoorObservation(clock: 10, distance: 5, label: .entrance)]))),
                        ["Entrance ahead, about 5 meters, 10 o'clock."])
     }
@@ -101,7 +101,7 @@ final class SessionSystemTests: XCTestCase {
         var h = SessionHarness()
         XCTAssertEqual(said(h.send(.notUnderstood(noisy: false))), ["I didn't catch that. Say the product name."])
         h.send(.talkPressed)
-        XCTAssertEqual(said(h.send(.notUnderstood(noisy: true))), ["Sorry, I didn't catch that. It's noisy here."])
+        XCTAssertEqual(said(h.send(.notUnderstood(noisy: true))), ["Didn't catch that. Too noisy."])
     }
 
     func testStartIsIgnoredWhileRunning() {
@@ -150,7 +150,7 @@ final class SessionSystemTests: XCTestCase {
 
         h.send(.signs([SessionFixtures.coffeeSign]))
         XCTAssertEqual(said(h.send(.system(.audioRouteChanged))), ["9 o'clock, aisle 6, coffee and tea."])
-        XCTAssertEqual(said(h.send(.system(.cameraDenied))), ["Camera access is off. Ask someone to turn it on in Settings."])
+        XCTAssertEqual(said(h.send(.system(.cameraDenied))), ["Camera access is off. Check Settings."])
         XCTAssertEqual(said(h.send(.system(.cameraDenied))), [])
     }
 

@@ -34,9 +34,10 @@ struct GeminiRESTClient: GeminiClient {
         let prompt = """
             You help a blind shopper through a phone camera on their chest. They said: "\(transcript)"
             Place: \(place). Currently looking for: \(goal). Step: \(context.phase.title).
-            say: your spoken reply, at most 2 short sentences. Only describe what is visible or printed, or answer
-            plainly. For dietary or allergen questions, end with "Check with staff to confirm."
-            Never give safety instructions or walking directions.
+            say: your spoken reply, AT MOST 8 WORDS, fewer is better. Only the answer or the action the user needs
+            (for example "Yes, Oatly oat milk." or "Hallway, bench at 1 o'clock."). Never describe the scene beyond
+            what was asked, never say what you don't see, never explain. For dietary or allergen questions, end with
+            "Check with staff." Never give safety instructions or walking directions.
             findItem: only if they want to find or buy something, the thing to look for in 1 to 4 words
             (for example "oat milk" or "car keys"); otherwise leave it empty.
             """
@@ -53,9 +54,12 @@ struct GeminiRESTClient: GeminiClient {
         let prompt = """
             This photo is from a camera on a blind person's chest. Find: \(description). \
             If it is visible, give its bounding box as box_2d [ymin, xmin, ymax, xmax] on a 0–1000 scale, your \
-            confidence 0–1, and a 3–6 word description of what you see. If it is not visible, set found false and \
-            give one short hint (at most 12 words) about where it is likely to be relative to this photo, using \
-            clock positions (12 = straight ahead, 3 = right, 9 = left), or an empty hint.
+            confidence 0–1, and a 3–6 word description of what you see. If it is not visible, set found false. \
+            hint: AT MOST 8 WORDS, only where to turn or look, as a clock position (12 = straight ahead, \
+            3 = right, 9 = left), for example "Try 3 o'clock." Never describe the photo, never say what you see or \
+            don't see. If you have no useful direction, leave hint empty. \
+            Also set crowded true only if there are a lot of people (about 6 or more) within a few meters of the \
+            camera, otherwise false.
             """
         let a = try await generate(NetworkItemAnswer.self, prompt: prompt, images: [image],
                                    schema: NetworkItemAnswer.schema, timeout: Self.timeout)

@@ -11,7 +11,7 @@ If the local package is missing (build errors like "No such module 'DigiFinderCo
 ```
 cp Secrets.example.plist DigiFinder/Resources/Secrets.plist
 ```
-Fill in `GeminiAPIKey`, `GeminiModel` (e.g. `gemini-3.8-flash`) and `OFFContact` (an email for the Open Food Facts User-Agent). The file is gitignored. Without it the app still builds and runs fully offline; questions answer "Online help isn't set up."
+Fill in `GeminiAPIKey`, optionally `GeminiFallbackAPIKey` (used when the main key is refused), `GeminiModel` (e.g. `gemini-3.8-flash`) and `OFFContact` (an email for the Open Food Facts User-Agent). The file is gitignored. Without it the app still builds and runs fully offline; questions answer "Online help isn't set up."
 
 ### 3. Product data (§7.1, once, several GB download)
 ```

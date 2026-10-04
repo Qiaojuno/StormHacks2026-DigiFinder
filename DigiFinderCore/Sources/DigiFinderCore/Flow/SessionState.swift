@@ -117,6 +117,11 @@ public struct SessionState: Equatable {
     var choiceAskedAt: Double?
     var askingNextAt: Double?
     var dangerSince: Double?
+    /// Gemini answers and hints that arrived during an alert, played once it clears (owner decision). A new alert
+    /// keeps them waiting. Newest hint only.
+    var afterDanger: [SessionEvent] = []
+    var wetFloorSignAt: Double?
+    var crowdWarnedAt: Double?
     var work: StreamWork?
     var progress = SessionGoalProgress()
     var marks = SessionStepMarks()
@@ -197,6 +202,9 @@ struct SessionStepMarks: Equatable {
     var destinationNotFoundSaid = false
     var noisyRetry = false
     var shelfDistanceSaid = false
+    /// "Stop and look around. I need context." was said; waiting for the user to stand still.
+    var contextAskedAt: Double?
+    var contextStillSince: Double?
 
     init(anchor: Double = 0) { scanAnchor = anchor; unclearAnchor = anchor }
 }

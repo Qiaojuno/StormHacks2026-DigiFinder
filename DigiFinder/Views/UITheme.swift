@@ -10,6 +10,11 @@ enum UITheme {
     static let panel = Color(white: 0.14)
     static let border = Color(white: 0.7)
     static let minTarget: CGFloat = 60
+    /// Main screen (Figma): the record button and selected tab, and the bottom bar.
+    static let brand = Color(red: 0.886, green: 0.325, blue: 0.227)       // #E2533A
+    static let bar = Color(red: 0.13, green: 0.094, blue: 0.086)          // #211816
+    static let glass = Color.white.opacity(0.16)
+    static let glassStroke = Color.white.opacity(0.22)
 }
 
 /// Large, high-contrast button for the debug panel: filled or outlined.

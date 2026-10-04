@@ -32,6 +32,8 @@ protocol SafetyService: AnyObject {
     func setWork(_ w: StreamWork)
     /// The stream (owner decision): false = no danger or stairs checks at all until true again. Any thread.
     func setActive(_ on: Bool)
+    /// Alert sensitivity by place (owner decision): store = sensitive, general = calm. Any thread.
+    func setProfile(_ p: ThreatProfile)
     /// Debug overlay (§6): corridor, steer, TTC, stairs profile. Thread-safe copy; poll at ~2–5 Hz.
     var debugSnapshot: SafetyDebugSnapshot { get }
 }
@@ -135,6 +137,8 @@ struct ItemFinding: Equatable {
     let description: String
     /// Not found: where to look, ≤ 12 words, clock positions relative to the photo; "" if none.
     let hint: String
+    /// A lot of people close around the user.
+    var crowded = false
 }
 
 /// Stills must be upright JPEGs (`NetworkJPEG.encode`). Errors are `NetworkError`.

@@ -9,10 +9,12 @@ struct NetworkItemAnswer: Decodable {
     let confidence: Double?
     let description: String?
     let hint: String?
+    /// A lot of people close around the user (owner decision: every scan reports it).
+    let crowded: Bool?
 
     /// Below this Gemini's "found" counts as not found.
     static let minConfidence = 0.5
-    static let maxHintWords = 12
+    static let maxHintWords = 8                           // owner rule: ≤ 8 words per spoken line
 
     static var schema: [String: Any] { [
         "type": "OBJECT",
@@ -22,8 +24,9 @@ struct NetworkItemAnswer: Decodable {
             "confidence": ["type": "NUMBER"],
             "description": ["type": "STRING"],
             "hint": ["type": "STRING"],
+            "crowded": ["type": "BOOLEAN"],
         ],
-        "required": ["found", "confidence", "description", "hint"],
+        "required": ["found", "confidence", "description", "hint", "crowded"],
     ] }
 
     /// nil without a found flag.
@@ -35,7 +38,7 @@ struct NetworkItemAnswer: Decodable {
         let words = (hint ?? "").split(whereSeparator: \.isWhitespace).prefix(Self.maxHintWords)
         return ItemFinding(found: ok, box: ok ? box : nil, confidence: c,
                            description: description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                           hint: ok ? "" : words.joined(separator: " "))
+                           hint: ok ? "" : words.joined(separator: " "), crowded: crowded ?? false)
     }
 
     /// box_2d → contract-space rect (x = xmin/1000, y = ymin/1000, …); nil when degenerate.

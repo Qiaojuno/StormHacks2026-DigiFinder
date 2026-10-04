@@ -20,6 +20,8 @@ final class ObjectDetectionService: ObjectDetector, @unchecked Sendable {
     static let essentialLabels: Set<String> = [
         // People and things that move toward the user (danger labels).
         "Person", "Man", "Woman", "Boy", "Girl", "Cart", "Wheelchair", "Bicycle", "Dog", "Car",
+        // Furniture in the way (owner decision: tables and chairs are obstacles again).
+        "Table", "Coffee table", "Kitchen & dining room table", "Desk", "Billiard table", "Chair",
         // Stairs confirmation for the stairs check (safety).
         "Stairs",
     ]

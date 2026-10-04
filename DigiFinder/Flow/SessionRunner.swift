@@ -90,27 +90,22 @@ final class SessionRunner: UISessionDriving, UIDebugSnapshotSource {
         publish()
     }
 
-    /// Volume up: only starts a recording (ignored while one runs, §5.10).
+    /// Volume up (owner decision): only records a request; stopped → "Press volume down to start." 
     func volumeUp() {
         if skipWalkthrough() { return }
         handle(.talkPressed)
     }
 
-    /// Volume down (owner decision): the stream ends — recording discarded, speech cut, camera, danger and perception
-    /// off, item and list cleared.
+    /// Volume down (owner decision): starts the stream when stopped; when running, everything stops — recording
+    /// discarded, speech cut, camera, danger and perception off, item cleared.
     func volumeDown() {
+        if skipWalkthrough() { return }
         handle(.donePressed)
     }
 
-    /// On-screen record button (owner decision): while the stream runs it is the stop button (= volume down: everything
-    /// stops); when stopped, a tap starts the stream and a recording like volume up (only when the user is still).
+    /// On-screen record button (owner decision): same as volume down (start / stop the stream).
     func screenTalkPressed() {
-        if session.state.streaming || session.state.isListening || env.voice.isListening {
-            volumeDown()
-            return
-        }
-        if skipWalkthrough() { return }
-        handle(.talkPressed)
+        volumeDown()
     }
 
     private func startCamera() {
@@ -259,10 +254,25 @@ final class SessionRunner: UISessionDriving, UIDebugSnapshotSource {
         }
     }
 
+    /// Which way up the phone hangs, from gravity (owner decision: automatic, no flip button).
+    private var orientation = OrientationTracker()
+
     private func clockFired() {
         let m = env.motion
+        if let upsideDown = orientation.update(gravityY: m.gravity.y, t: ProcessInfo.processInfo.systemUptime) {
+            orientationChanged(upsideDown)
+        }
         handle(.motion(yawDegrees: -m.yawDegrees, steps: m.steps, walking: m.isWalking))   // session yaw is clockwise
         handle(.tick(ProcessInfo.processInfo.systemUptime))
+    }
+
+    /// Every camera-image direction (item box, tracker, signs, Gemini photos) follows the new way up at once.
+    /// LiDAR alerts use gravity directly and need nothing. The tracked box and any Gemini answer for a photo taken
+    /// the old way up are dropped; the next scan (≤ 2 s) finds the item again.
+    private func orientationChanged(_ upsideDown: Bool) {
+        CaptureOrientation.set(upsideDown: upsideDown)
+        if env.perception.isTrackingTarget { env.perception.trackTarget(nil) }
+        finder?.restart()
     }
 
     private func beginSession() {
@@ -298,6 +308,8 @@ final class SessionRunner: UISessionDriving, UIDebugSnapshotSource {
                 env.feedback.stopSpeech()
             case .setStreaming(let on):
                 setStreaming(on)
+            case .buzz:
+                env.feedback.dangerPulse()
             case .chime(let tone):
                 env.feedback.chime(tone)
             case .listen:
@@ -333,7 +345,19 @@ final class SessionRunner: UISessionDriving, UIDebugSnapshotSource {
         }
         syncVerbosity()
         syncFinder()
+        syncThreatProfile()
         publish()
+    }
+
+    private var threatProfile: ThreatProfile?
+
+    /// Owner decision: grocery store = sensitive alerts; anywhere else or not known yet = calm (crowds, schools).
+    private func syncThreatProfile() {
+        let st = session.state
+        let p: ThreatProfile = (st.placeOverride ?? st.place) == .store ? .store : .general
+        guard p != threatProfile else { return }
+        threatProfile = p
+        env.safety.setProfile(p)
     }
 
     /// The Gemini item finder runs while a search runs: stream on, a goal, Entrance / FindAisle / InAisle, no Ask

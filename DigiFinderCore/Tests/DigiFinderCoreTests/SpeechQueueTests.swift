@@ -62,7 +62,7 @@ final class SpeechQueueTests: XCTestCase {
 
     func testInterruptedStairsAndRepliesComeBack() {
         var q = SpeechPriorityQueue()
-        let stairs = line("Stairs going up, about 8 steps, 3 meters, 12 o'clock.", .stairs)
+        let stairs = line("Stairs up, about 8 steps, 3 meters.", .stairs)
         _ = q.enqueue(stairs)
         _ = q.enqueue(line("Danger first", .danger))
         XCTAssertEqual(q.finished(now: 20), stairs)                        // never stale, replayed after the alert
@@ -93,7 +93,7 @@ final class SpeechQueueTests: XCTestCase {
         XCTAssertTrue(q.holdForListening())
         XCTAssertNil(q.current)
         XCTAssertTrue(q.pendingLines.isEmpty)
-        _ = q.enqueue(line("Stairs going up, about 8 steps, 3 meters, 12 o'clock.", .stairs))
+        _ = q.enqueue(line("Stairs up, about 8 steps, 3 meters.", .stairs))
         _ = q.enqueue(line("Coffee is at 9 o'clock.", .guidance))
         _ = q.enqueue(line("Person ahead, stop", .danger, 0))
         XCTAssertFalse(q.holdForListening())                                // the danger line plays out

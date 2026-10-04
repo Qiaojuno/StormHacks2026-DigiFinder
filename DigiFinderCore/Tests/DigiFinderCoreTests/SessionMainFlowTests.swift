@@ -18,7 +18,7 @@ final class SessionMainFlowTests: XCTestCase {
         XCTAssertEqual(said(h.send(.signs([SessionFixtures.coffeeSign]))), [], "the same direction isn't repeated")
 
         e = h.send(.arrivedAtAisle(clock: 9))
-        XCTAssertEqual(said(e), ["Stop. Aisle 6 is at 9 o'clock."])
+        XCTAssertEqual(said(e), ["Stop. Aisle 6, 9 o'clock."])
         XCTAssertEqual(h.state.step, .findAisle, "InAisle only once the user walks into it")
 
         e = h.send(.motion(yawDegrees: -90, steps: 0, walking: true))
@@ -27,12 +27,12 @@ final class SessionMainFlowTests: XCTestCase {
         XCTAssertEqual(h.state.step, .inAisle)
 
         e = h.send(.signs([SessionFixtures.shelfSign]))
-        XCTAssertEqual(said(e), ["Stop here. Turn to the shelf at 9 o'clock."])
+        XCTAssertEqual(said(e), ["Stop. Shelf at 9 o'clock."])
         XCTAssertEqual(h.state.step, .inAisle, "Pick waits for Standing")
         XCTAssertEqual(works(e), [])
 
         e = h.send(.motion(yawDegrees: -90, steps: 2, walking: false))
-        XCTAssertEqual(said(e), ["Point at the shelf with one finger. Start at chest height."])
+        XCTAssertEqual(said(e), ["Point at the shelf, chest height."])
         XCTAssertEqual(works(e), [SessionFixtures.pointingWork])
         XCTAssertEqual(h.state.step, .pick)
 
@@ -53,7 +53,7 @@ final class SessionMainFlowTests: XCTestCase {
 
         let info = SessionFixtures.darkRoastInfo
         e = h.send(.confirmed(info, isGoal: true))
-        XCTAssertEqual(said(e), ["Got it: Starbucks Dark Roast. Put it in your cart.", "What's next?"])
+        XCTAssertEqual(said(e), ["Got it: Starbucks Dark Roast.", "Volume up for another item."])
         let chime = e.firstIndex(of: .chime(.done)), remember = e.firstIndex(of: .remember(info)), done = e.firstIndex(of: .markDone(coffee))
         XCTAssertNotNil(chime)
         XCTAssertLessThan(chime ?? 99, remember ?? -1)
@@ -63,20 +63,6 @@ final class SessionMainFlowTests: XCTestCase {
         XCTAssertEqual(h.state.foundCount, 1)
         XCTAssertEqual(h.state.step, .idle)
 
-        e = h.send(.talkPressed, .notUnderstood(noisy: false))       // nothing said after "What's next?"
-        XCTAssertEqual(said(e), ["Shopping done. You found 1 item."])
-        XCTAssertTrue(e.contains(.chime(.done)))
-        XCTAssertEqual(h.state.step, .idle)
-        XCTAssertTrue(h.state.finished)
-    }
-
-    func testWhatsNextSilenceFinishesAfterItsTimeout() {
-        var h = SessionHarness()
-        h.reachShelf()
-        h.grab()
-        h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
-        XCTAssertEqual(said(h.advance(11.5)), [])
-        XCTAssertEqual(said(h.advance(0.5)), ["Shopping done. You found 1 item."])
     }
 
 
@@ -118,7 +104,7 @@ final class SessionMainFlowTests: XCTestCase {
         XCTAssertEqual(said(h.advance(4)), ["Now face 3 o'clock."])
         let e = h.send(.aisleVerdict("coffee", evidence: ["coffee", "tea"]))
         XCTAssertEqual(said(e, .guidance), ["This is the coffee aisle."])
-        XCTAssertEqual(said(e, .narration), ["I see coffee and tea on both sides.", "Walk through slowly."])
+        XCTAssertEqual(said(e, .narration), ["Coffee and tea on both sides.", "Walk through slowly."])
         XCTAssertEqual(h.state.step, .inAisle)
         XCTAssertEqual(said(h.advance(10)), [], "no timer sends the user to the shelf")
         XCTAssertEqual(h.state.step, .inAisle)
@@ -139,7 +125,7 @@ final class SessionMainFlowTests: XCTestCase {
         XCTAssertEqual(said(h.advance(10)).last, "Take two steps back.")
         XCTAssertEqual(said(h.advance(0.5)), ["Face the shelf at 9 o'clock."], "no motion data: at once")
         XCTAssertEqual(said(h.advance(4)), ["Now face 3 o'clock."])
-        XCTAssertEqual(said(h.advance(4)), ["Walk to the end of the aisle; the signs are usually there."])
+        XCTAssertEqual(said(h.advance(4)), ["Walk to the aisle end for signs."])
         XCTAssertNil(h.state.vote)
         XCTAssertEqual(h.state.step, .findAisle)
     }
@@ -157,7 +143,7 @@ final class SessionMainFlowTests: XCTestCase {
         var h = SessionHarness()
         h.startGoal(SessionFixtures.coffee)
         let cereal = AisleSign(number: "3", words: ["Cereal"], clock: 12)
-        XCTAssertEqual(said(h.send(.signs([cereal]))), ["Coffee isn't on these signs. Keep turning slowly."])
+        XCTAssertEqual(said(h.send(.signs([cereal]))), ["Not on these signs. Keep turning."])
         XCTAssertEqual(said(h.send(.signs([AisleSign(number: "4", clock: 2)]))), [], "rate limited")
         h.advance(6)
         XCTAssertEqual(said(h.send(.signs([AisleSign(number: "4", clock: 2)]))), ["Aisle sign, 2 o'clock."])
@@ -165,11 +151,11 @@ final class SessionMainFlowTests: XCTestCase {
         h.send(.signs([SessionFixtures.coffeeSign]))                  // at 9 o'clock while facing 0°
         h.send(.motion(yawDegrees: 90, steps: 0, walking: false))     // turned to face the other way
         h.advance(6)
-        XCTAssertEqual(said(h.send(.signs([cereal]))), ["Coffee was aisle 6, at 6 o'clock behind you."])
+        XCTAssertEqual(said(h.send(.signs([cereal]))), ["Coffee was aisle 6, behind you."])
 
         h.advance(11)                                                 // the sign no longer overrides the vote
-        XCTAssertEqual(said(h.send(.aisleVerdict("tea", evidence: []))), ["This looks like tea. Coffee is usually nearby. Walk slowly ahead."])
-        XCTAssertEqual(said(h.send(.aisleVerdict("pasta", evidence: []))), ["This looks like pasta, not coffee. Go back to the main aisle."])
+        XCTAssertEqual(said(h.send(.aisleVerdict("tea", evidence: []))), ["Coffee is usually nearby. Walk slowly."])
+        XCTAssertEqual(said(h.send(.aisleVerdict("pasta", evidence: []))), ["Wrong aisle. Go back to the main aisle."])
     }
 
     func testReadableSignOverridesAConflictingVerdict() {
@@ -183,7 +169,7 @@ final class SessionMainFlowTests: XCTestCase {
         var h = SessionHarness()
         h.startGoal(SessionFixtures.bananas)
         let e = h.send(.aisleVerdict("produce", evidence: ["Banana", "Apple"]))
-        XCTAssertEqual(said(e, .guidance), ["This looks like produce: banana and apple ahead."])
+        XCTAssertEqual(said(e, .guidance), ["This looks like produce."])
         XCTAssertEqual(h.state.step, .inAisle)
     }
 
@@ -204,7 +190,7 @@ final class SessionMainFlowTests: XCTestCase {
         h.send(.routed(.command(.moreDetail)))
         h.startGoal(SessionFixtures.coffee)
         h.send(.signs([SessionFixtures.coffeeSign]))
-        XCTAssertEqual(said(h.send(.arrivedAtAisle(clock: 9))).first, "Stop. Aisle 6 is at 9 o'clock, coffee and tea.")
+        XCTAssertEqual(said(h.send(.arrivedAtAisle(clock: 9))).first, "Stop. Aisle 6, 9 o'clock.")
     }
 
     /// No timer turns the user into the aisle: only walking toward its bearing (or the vote) does.

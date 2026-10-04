@@ -43,6 +43,10 @@ struct SafetyDebugSnapshot: Equatable {
     var alertActive = false
     /// "Person ahead, steer left".
     var lastAlert: String?
+    /// Gravity along the phone's long axis (g): about -1 upright, +1 upside down.
+    var gravityY: Float = 0
+    /// Fence / barricade check: found, or why not.
+    var barrierReason = ""
     /// Frame capture → `feedback.danger` call, milliseconds (target < 50).
     var lastAlertLatencyMs: Double?
     /// Safety work per depth frame, milliseconds.
@@ -79,6 +83,7 @@ struct SafetyDebugSnapshot: Equatable {
         if let ms = lastAlertLatencyMs { alert += String(format: " %.0f ms", ms) }
         out.append(alert)
         var state = "\(walking ? "walking" : "standing") · rot \(String(format: "%.1f", rotationRate)) rad/s"
+            + " · \(Geometry.cameraUpsideDown ? "UPSIDE DOWN" : "upright") (g.y \(String(format: "%+.2f", gravityY)))"
         if let s = aisleSides {
             state += " · shelves \(s.left ? "L" : "-")\(s.right ? "R" : "-")" + (betweenShelves ? " (aisle)" : "")
         }
@@ -92,6 +97,7 @@ struct SafetyDebugSnapshot: Equatable {
         }
         stairsLine += " · profile \(stairsProfile.count) bins"
         out.append(stairsLine)
+        out.append("barrier: \(barrierReason.isEmpty ? "–" : barrierReason)")
         return out
     }
 }

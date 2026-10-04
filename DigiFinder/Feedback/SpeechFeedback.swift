@@ -79,7 +79,8 @@ final class SpeechFeedback: NSObject, FeedbackOutput, UIDebugSnapshotSource, AVS
                               priority: .danger, createdAt: Self.now())
         markSubmit()
         queue.async {
-            if self.lines.clear(below: .stairs) { self.stopCurrentOutput() }
+            // Guidance is dropped; replies (Gemini answers) wait and play after the alert (owner decision).
+            if self.lines.clear(below: .reply) { self.stopCurrentOutput() }
             self.held.removeAll()
             self.submit(line)
             self.unmarkSubmit()

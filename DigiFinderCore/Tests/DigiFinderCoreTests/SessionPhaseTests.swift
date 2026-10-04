@@ -69,13 +69,13 @@ final class SessionPhaseTests: XCTestCase {
     func testShelfSignWhileWalkingWaitsForStanding() {
         var h = SessionHarness()
         h.enterAisle()
-        XCTAssertEqual(said(h.send(.signs([SessionFixtures.shelfSign]))), ["Stop here. Turn to the shelf at 9 o'clock."])
+        XCTAssertEqual(said(h.send(.signs([SessionFixtures.shelfSign]))), ["Stop. Shelf at 9 o'clock."])
         XCTAssertEqual(said(h.send(.signs([SessionFixtures.shelfSign]))), [], "said once")
         XCTAssertEqual(said(h.send(.motion(yawDegrees: -90, steps: 1, walking: true))), [])
         XCTAssertEqual(said(h.advance(10)), [])
         XCTAssertEqual(h.state.step, .inAisle)
         XCTAssertEqual(said(h.send(.motion(yawDegrees: -90, steps: 2, walking: false))),
-                       ["Point at the shelf with one finger. Start at chest height."])
+                       ["Point at the shelf, chest height."])
         XCTAssertEqual(h.state.step, .pick)
     }
 
@@ -84,7 +84,7 @@ final class SessionPhaseTests: XCTestCase {
         h.enterAisle()
         h.send(.motion(yawDegrees: -90, steps: 1, walking: false))
         XCTAssertEqual(said(h.send(.signs([SessionFixtures.shelfSign]))),
-                       ["Stop here. Turn to the shelf at 9 o'clock.", "Point at the shelf with one finger. Start at chest height."])
+                       ["Stop. Shelf at 9 o'clock.", "Point at the shelf, chest height."])
         XCTAssertEqual(h.state.step, .pick)
     }
 
@@ -129,12 +129,12 @@ final class SessionPhaseTests: XCTestCase {
         XCTAssertEqual(said(h.send(.aisleEnd)), [], "fewer than 5 steps: the aisle's own entrance")
         h.send(.motion(yawDegrees: -90, steps: 8, walking: true))
         let e = h.send(.aisleEnd)
-        XCTAssertEqual(said(e), ["End of aisle. Item not found here.", "Say 'find staff' for help, or 'next' for the next item."])
+        XCTAssertEqual(said(e), ["End of aisle. Item not found here.", "Say 'find staff' or 'next'."])
         XCTAssertFalse(e.contains { if case .chime = $0 { return true } else { return false } })
         XCTAssertEqual(h.state.step, .inAisle)
         XCTAssertEqual(said(h.send(.aisleEnd)), [], "once per item")
         XCTAssertEqual(VoiceCommandParser.parse("next"), .stop)
-        XCTAssertEqual(said(h.send(.routed(.command(.stop)))), ["Stopped.", "What's next?"])
+        XCTAssertEqual(said(h.send(.routed(.command(.stop)))), ["Stopped.", "Volume up for another item."])
     }
 
     func testAisleEndPedometerBackup() {
@@ -142,7 +142,7 @@ final class SessionPhaseTests: XCTestCase {
         h.enterAisle()
         XCTAssertEqual(said(h.send(.motion(yawDegrees: -90, steps: 25, walking: true))), [])
         XCTAssertEqual(said(h.send(.motion(yawDegrees: -90, steps: 29, walking: true))),
-                       ["End of aisle. Item not found here.", "Say 'find staff' for help, or 'next' for the next item."])
+                       ["End of aisle. Item not found here.", "Say 'find staff' or 'next'."])
     }
 
     func testAisleEndIgnoredOutsideTheAisle() {

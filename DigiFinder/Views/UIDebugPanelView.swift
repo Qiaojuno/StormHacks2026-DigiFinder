@@ -35,9 +35,9 @@ struct UIDebugPanelView: View {
 
             HStack(spacing: 8) {
                 Button("Volume ↑", action: debug.volumeUp)
-                    .accessibilityLabel("Volume up, talk")
+                    .accessibilityLabel("Volume up, ask")
                 Button("Volume ↓", action: debug.volumeDown)
-                    .accessibilityLabel("Volume down, done")
+                    .accessibilityLabel("Volume down, start or stop")
             }
             .font(.headline)
             .buttonStyle(UILargeButtonStyle())

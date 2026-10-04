@@ -16,7 +16,7 @@ extension ShoppingSession {
         reply(clearPathPhrase(meters: meters, inSteps: state.distanceInSteps), prompt: false)
     }
 
-    /// Path clear → recalculate the current step and speak a fresh prompt.
+    /// Path clear → recalculate the current step and speak a fresh prompt, then the Gemini lines that waited.
     mutating func dangerCleared() {
         state.dangerSince = nil
         recalculate()
@@ -24,6 +24,27 @@ extension ShoppingSession {
         case .pick: guide(SessionPhrases.pointAtShelf)
         case .confirm: guide(SessionPhrases.holdUp)
         default: break                                       // the next frames speak (de-dupe cleared)
+        }
+        releaseAfterDanger()
+    }
+
+    /// Owner decision: Gemini answers and hints wait for the alert to end instead of being dropped.
+    mutating func holdAfterDanger(_ e: SessionEvent) {
+        if case .searchHint = e { state.afterDanger.removeAll { if case .searchHint = $0 { return true }; return false } }
+        if e == .crowded, state.afterDanger.contains(.crowded) { return }
+        state.afterDanger.append(e)
+    }
+
+    mutating func releaseAfterDanger() {
+        let waiting = state.afterDanger
+        state.afterDanger = []
+        for e in waiting {
+            switch e {
+            case .searchHint(let text): if canObserve { searchHint(text) }
+            case .assistAnswer(let say, let find): assistAnswer(say: say, find: find)
+            case .crowded: crowdWarning()
+            default: break
+            }
         }
     }
 }
@@ -66,6 +87,37 @@ extension ShoppingSession {
         }
         speak(text, .stairs, prompt: false)
         if cut { reply(SessionPhrases.sayAgain, prompt: false) }
+    }
+}
+
+// MARK: - Wet floor sign (owner decision): on-device text reader, walking only, one vibration.
+
+/// Words that mean a wet floor sign (English / French, as the text reader is set up).
+public func isWetFloorSignText(_ lines: [String]) -> Bool {
+    let t = lines.joined(separator: " ").lowercased()
+    return ["wet floor", "caution", "piso mojado", "sol glissant", "plancher mouill"].contains { t.contains($0) }
+        || (t.contains("wet") && t.contains("floor"))
+}
+
+extension ShoppingSession {
+    static let wetFloorCooldown = 20.0
+    /// "Lot of people around you" at most this often (s).
+    static let crowdWarningInterval = 60.0
+
+    /// Spoken as a reply so it waits for an alert instead of being dropped (owner decision).
+    mutating func crowdWarning() {
+        guard state.streaming else { return }
+        if let at = state.crowdWarnedAt, state.now >= at, state.now - at < Self.crowdWarningInterval { return }
+        state.crowdWarnedAt = state.now
+        reply(SessionPhrases.crowded, prompt: false)
+    }
+
+    mutating func wetFloorSign(clock: Int) {
+        guard state.streaming, state.isWalking else { return }
+        if let at = state.wetFloorSignAt, state.now >= at, state.now - at < Self.wetFloorCooldown { return }
+        state.wetFloorSignAt = state.now
+        out.append(.buzz)
+        sayStairs(SessionPhrases.wetFloorSign(clock: clock))      // safety line: not cut, not stale
     }
 }
 
@@ -216,8 +268,10 @@ extension ShoppingSession {
         if let since = state.dangerSince, now - since >= SessionTuning.dangerHold {
             state.dangerSince = nil
             recalculate()
+            releaseAfterDanger()
         }
-        if let a = state.assist, now - a.startedAt >= SessionTuning.assistTimeout {
+        let answerWaiting = state.afterDanger.contains { if case .assistAnswer = $0 { return true }; return false }
+        if let a = state.assist, !answerWaiting, now - a.startedAt >= SessionTuning.assistTimeout {
             state.assist = nil                                   // no answer: the offline path, silently
             resumeAfterAsking(then: a)
         }

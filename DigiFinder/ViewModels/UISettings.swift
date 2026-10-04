@@ -48,8 +48,6 @@ struct UISettings: Codable, Equatable {
     var hasHeardWalkthrough = false
     /// Nearby mode: look around for the item itself (home, a room), no signs or aisles.
     var nearbyMode = false
-    /// The phone hangs upside down on the lanyard (flip-camera button).
-    var cameraUpsideDown = false
 
     init() {}
 
@@ -65,7 +63,6 @@ struct UISettings: Codable, Equatable {
         detail = (try? c.decodeIfPresent(Verbosity.self, forKey: .detail)) ?? d.detail
         hasHeardWalkthrough = (try? c.decodeIfPresent(Bool.self, forKey: .hasHeardWalkthrough)) ?? d.hasHeardWalkthrough
         nearbyMode = (try? c.decodeIfPresent(Bool.self, forKey: .nearbyMode)) ?? d.nearbyMode
-        cameraUpsideDown = (try? c.decodeIfPresent(Bool.self, forKey: .cameraUpsideDown)) ?? d.cameraUpsideDown
     }
 }
 

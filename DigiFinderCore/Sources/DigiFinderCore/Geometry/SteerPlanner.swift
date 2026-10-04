@@ -22,8 +22,13 @@ public enum SteerTuning {
 /// Degrees right of straight ahead (negative = left) of the nearest open heading, or nil if no visible heading is
 /// open. Headings closest to straight ahead win; on a tie, the side away from the obstacle.
 public func openHeading(_ pts: [Vec3], obstacleX: Float, obstacleZ: Float, corridor c: Corridor = .init()) -> Double? {
+    scanHeadings(pts, obstacleX: obstacleX, obstacleZ: obstacleZ, corridor: c).open
+}
+
+/// The open heading (if any) and the least blocked one (the side with the most room) in the visible field.
+func scanHeadings(_ pts: [Vec3], obstacleX: Float, obstacleZ: Float, corridor c: Corridor) -> (open: Double?, leastBlocked: Double?) {
     let band = pts.filter { $0.y > -c.below && $0.y < c.above && $0.z > 0.2 && $0.z.isFinite && $0.x.isFinite }
-    guard band.count >= SteerTuning.minVisible else { return nil }
+    guard band.count >= SteerTuning.minVisible else { return (nil, nil) }
     // Field of view actually covered by points (minus a margin so the gap's far edge is still seen).
     var seen = 0.0
     for p in band {
@@ -34,28 +39,29 @@ public func openHeading(_ pts: [Vec3], obstacleX: Float, obstacleZ: Float, corri
     let need = min(max(obstacleZ + SteerTuning.pastObstacle, SteerTuning.minClear), SteerTuning.maxClear)
     let awaySign: Double = obstacleX > 0 ? -1 : 1            // prefer turning away from the obstacle's side
 
-    func open(_ deg: Double) -> Bool {
+    func blockers(_ deg: Double) -> Int {
         let r = Float(deg * .pi / 180), s = sin(r), co = cos(r)
-        var blockers = 0
+        var n = 0
         for p in band {
             let along = p.x * s + p.z * co
             let across = p.x * co - p.z * s
-            if abs(across) < SteerTuning.gapHalfWidth && along > 0.2 && along < need {
-                blockers += 1
-                if blockers >= SteerTuning.maxBlockers { return false }
-            }
+            if abs(across) < SteerTuning.gapHalfWidth && along > 0.2 && along < need { n += 1 }
         }
-        return true
+        return n
     }
 
+    var least: (deg: Double, n: Int)?
     var k = 1.0
     while k * SteerTuning.stepDegrees <= limit {
         let d = k * SteerTuning.stepDegrees
-        if open(awaySign * d) { return awaySign * d }
-        if open(-awaySign * d) { return -awaySign * d }
+        for deg in [awaySign * d, -awaySign * d] {
+            let n = blockers(deg)
+            if n < SteerTuning.maxBlockers { return (deg, deg) }
+            if least == nil || n < least!.n { least = (deg, n) }
+        }
         k += 1
     }
-    return nil
+    return (nil, least?.deg)
 }
 
 /// Clock position for a steer heading: never 12 (that's where the obstacle is), so a small turn is 1 or 11.
@@ -66,11 +72,16 @@ public func steerClock(degreesRight deg: Double) -> Int {
 
 /// `.clock(n)` toward the nearest open gap; `.stop` when every visible heading is blocked; `.unknown` when there
 /// aren't enough points to judge.
-public func steerDirection(_ pts: [Vec3], obstacleX: Float, obstacleZ: Float, corridor c: Corridor = .init()) -> Steer {
+/// `alwaysClock` (barriers, owner decision): when nothing is fully open, steer toward the side with the most room
+/// (usually the barrier's end) instead of "stop. Turn slowly.".
+public func steerDirection(_ pts: [Vec3], obstacleX: Float, obstacleZ: Float, corridor c: Corridor = .init(),
+                           alwaysClock: Bool = false) -> Steer {
     let visible = pts.lazy.filter { $0.y > -c.below && $0.y < c.above && $0.z > 0.2 && $0.z.isFinite }.count
     guard visible >= SteerTuning.minVisible else { return .unknown }
-    guard let deg = openHeading(pts, obstacleX: obstacleX, obstacleZ: obstacleZ, corridor: c) else { return .stop }
-    return .clock(steerClock(degreesRight: deg))
+    let scan = scanHeadings(pts, obstacleX: obstacleX, obstacleZ: obstacleZ, corridor: c)
+    if let deg = scan.open { return .clock(steerClock(degreesRight: deg)) }
+    if alwaysClock, let deg = scan.leastBlocked { return .clock(steerClock(degreesRight: deg)) }
+    return .stop
 }
 
 /// "2 meters" / "under 1 meter" / "3 steps" (steps of ~0.7 m).

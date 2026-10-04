@@ -10,7 +10,7 @@ final class SessionEndingTests: XCTestCase {
                .signs([SessionFixtures.shelfSign]), .motion(yawDegrees: -90, steps: 2, walking: false))
         h.grab()
         let e = h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
-        XCTAssertEqual(said(e), ["Got it: Starbucks Dark Roast. Put it in your cart.", "What's next?"], "one item at a time")
+        XCTAssertEqual(said(e), ["Got it: Starbucks Dark Roast.", "Volume up for another item."], "one item at a time")
         XCTAssertTrue(e.contains(.chime(.done)))
     }
 
@@ -27,31 +27,25 @@ final class SessionEndingTests: XCTestCase {
         XCTAssertEqual(h.state.queue, [])
     }
 
-    func testSessionDoneAfterWhatsNextSilenceAndRunnerFallback() {
+    /// Owner decision: after an item (found or not) there's no "What's next?" and no follow-up line; the stream stays on.
+    func testNoFollowUpAfterAnItem() {
         var h = SessionHarness()
         h.reachShelf()
         h.grab()
-        h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
-        XCTAssertEqual(said(h.advance(13)), ["Shopping done. You found 1 item."], "no answer at all")
+        let e = h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
+        XCTAssertFalse(said(e).contains("What's next?"))
+        XCTAssertFalse(e.contains(.listen))
+        XCTAssertFalse(e.contains(.setStreaming(false)))
+        XCTAssertEqual(said(h.advance(30)), [], "nothing more until volume up")
         XCTAssertEqual(h.state.step, .idle)
-        XCTAssertTrue(h.state.finished)
-        h.send(.started)
-        XCTAssertEqual(h.state.foundCount, 0, "a new trip starts from zero")
-    }
-
-    func testDoneOrStopAnswersWhatsNext() {
-        var h = SessionHarness()
-        h.reachShelf()
-        h.grab()
-        h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
-        XCTAssertEqual(said(h.send(.routed(.command(.finishTalking)))), ["Shopping done. You found 1 item."])
+        XCTAssertTrue(h.state.streaming)
     }
 
     func testStopCancelsTheGoalThenNextOrWhatsNext() {
         var h = SessionHarness()
         h.send(.routed(.product(SessionFixtures.coffee, .unspecified)))
         let e = h.send(.routed(.command(.stop)))
-        XCTAssertEqual(said(e), ["Stopped.", "What's next?"])
+        XCTAssertEqual(said(e), ["Stopped.", "Volume up for another item."])
         XCTAssertTrue(e.contains(.chime(.done)))
         XCTAssertFalse(e.contains(.markDone(SessionFixtures.coffee)))
         XCTAssertFalse(e.contains(.listen))
@@ -66,7 +60,7 @@ final class SessionEndingTests: XCTestCase {
         XCTAssertEqual(h.state.step, .pick)
         XCTAssertFalse(said(h.advance(89)).contains(SessionPhrases.notFound))
         let e = h.advance(1)
-        XCTAssertEqual(said(e), ["I didn't find it. It may be out of stock. Say 'find staff' for help.", "What's next?"])
+        XCTAssertEqual(said(e), ["I couldn't find it.", "Volume up for another item."])
         XCTAssertTrue(e.contains(.chime(.done)))
         XCTAssertNil(h.state.goal)
     }
@@ -85,10 +79,10 @@ final class SessionEndingTests: XCTestCase {
         h.send(.routed(.unknownProduct("tahini", .unspecified)))         // word search: no shelf vote
         let early = said(h.advance(29.5))
         XCTAssertEqual(early, ["I can't see any signs. Turn slowly."])
-        XCTAssertEqual(said(h.advance(0.5)), ["I've lost track. Walk ahead slowly and I'll look for signs."])
+        XCTAssertEqual(said(h.advance(0.5)), ["Lost track. Walk slowly ahead."])
         XCTAssertFalse(said(h.advance(59.5)).contains(SessionPhrases.guidancePaused))
         let e = h.advance(0.5)
-        XCTAssertEqual(said(e), ["Guidance paused. Press volume up when you're ready."])
+        XCTAssertEqual(said(e), ["Paused. Volume up when ready."])
         XCTAssertTrue(e.contains(.chime(.done)))
         XCTAssertEqual(h.state.pause, .lost)
         XCTAssertEqual(h.state.step, .findAisle, "the pause is an overlay: the phase is kept")
@@ -107,5 +101,20 @@ final class SessionEndingTests: XCTestCase {
         h.advance(25)
         h.send(.signs([AisleSign(number: "4", words: ["Tahini"], clock: 12)]))
         XCTAssertFalse(said(h.advance(25)).contains(SessionPhrases.lostTrack))
+    }
+}
+
+/// Owner decision: obstacle detection (YOLO) runs whenever the stream is on, with or without a search.
+final class DetectionAlwaysOnTests: XCTestCase {
+    func testYOLORunsInEveryPhaseWhileStreaming() {
+        var h = SessionHarness()
+        XCTAssertGreaterThan(h.session.currentWork().yoloFPS, 0, "idle, no search")
+        h.reachShelf()
+        XCTAssertGreaterThan(h.session.currentWork().yoloFPS, 0, "pick")
+        h.grab()
+        XCTAssertGreaterThan(h.session.currentWork().yoloFPS, 0, "confirm")
+        h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
+        XCTAssertGreaterThan(h.session.currentWork().yoloFPS, 0, "after the item: idle again")
+        XCTAssertTrue(h.state.streaming, "the stream stays on after an item")
     }
 }

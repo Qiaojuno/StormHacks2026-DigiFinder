@@ -79,7 +79,8 @@ extension ShoppingSession {
                 recordingEnded()
                 afterRecording()
             }
-        case .donePressed: stopStream()                    // volume down / stop: everything stops (owner decision)
+        case .donePressed:                                 // volume down (owner decision): the stream on / off
+            if state.streaming || state.isListening { stopStream() } else { startStream() }
         case .routed(let request):
             recordingEnded()
             handleRequest(request)
@@ -94,9 +95,13 @@ extension ShoppingSession {
         case .dangerCleared: dangerCleared()
         case .pathClear(let meters): pathClear(meters: meters)
         case .itemSeen(let clock, let distance): if canObserve { itemSeen(clock: clock, distance: distance) }
-        case .searchHint(let text): if canObserve { searchHint(text) }    // never held: a stale hint is useless
+        case .searchHint(let text):
+            if state.dangerSince != nil { holdAfterDanger(e) } else if canObserve { searchHint(text) }
         case .stairs(let o): stairs(o)
-        case .assistAnswer(let say, let find): assistAnswer(say: say, find: find)
+        case .wetFloorSign(let clock): wetFloorSign(clock: clock)
+        case .crowded: if state.dangerSince != nil { holdAfterDanger(e) } else { crowdWarning() }
+        case .assistAnswer(let say, let find):
+            if state.dangerSince != nil { holdAfterDanger(e) } else { assistAnswer(say: say, find: find) }
         case .unmatched(let text, let noisy):
             recordingEnded()
             unmatched(text, noisy: noisy)
@@ -243,18 +248,29 @@ extension ShoppingSession {
         state.pendingPlaceLine = nil
         state.loadingGoal = false
         state.dangerSince = nil
+        state.afterDanger = []
         state.goalEpoch += 1
         out.append(.setTarget(nil, candidates: [], destination: nil))
         out.append(.setStreaming(false))
         enter(.idle)
     }
 
-    /// Volume up / record button: only starts a recording (ignored while one runs). Volume down ends it (§5.10).
+    /// Volume down when stopped (owner decision): the stream starts (camera, obstacle detection, the place check).
+    mutating func startStream() {
+        state.streaming = true
+        out.append(.setStreaming(true))
+        out.append(.stopSpeech)
+        reply(SessionPhrases.started, prompt: false)
+        checkPlaceOnFirstStart()
+    }
+
+    /// Volume up (owner decision): ONLY records a request. Stopped → a hint to start first. Ignored while recording.
     mutating func talkPressed() {
         guard !state.isListening else { return }
-        if !state.streaming {                                  // volume up when stopped: the stream starts
-            state.streaming = true
-            out.append(.setStreaming(true))
+        guard state.streaming else {
+            out.append(.stopSpeech)
+            reply(SessionPhrases.pressToStart, prompt: false)
+            return
         }
         if state.askPending {                                  // the new recording replaces the pending request
             state.assist = nil
@@ -263,7 +279,6 @@ extension ShoppingSession {
         }
         out.append(.stopSpeech)
         listen()
-        checkPlaceOnFirstStart()
     }
 
     /// Records until volume down: no silence end, no time limit.

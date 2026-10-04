@@ -43,6 +43,10 @@ Appendix A. `tools/` files (copy exactly)
 - **Devices:** demo on **iPhone 13 Pro** (LiDAR + wide + ultra-wide; verified: `.builtInLiDARDepthCamera` and `.builtInUltraWideCamera` run together in one `AVCaptureMultiCamSession`). Development on **iPhone 13** (no LiDAR → fallback path). **Simulator** must build and launch to a "Camera unavailable" screen with a debug panel (typed requests + event buttons) that drives the session.
 - **Guard every hardware call.** No force-unwrapped devices, no unconditional sessions, check haptics capability.
 - **Never break the build.** Each milestone leaves the app launchable.
+- **Spoken lines (owner rule): at most 8 words each, fewer is better, actionable only:** where to go, what to do, or
+  a direct answer. Never narrate the scene, what isn't there, or reasoning ("I don't see three girls, I only see a boy
+  on his laptop" is wrong; say nothing, or "Try 3 o'clock."). Enforced in code: `SessionPhrases.maxWords`, Gemini
+  text cut with `capWords`, Gemini hints without a direction dropped, and `PhraseLengthTests` checks every line.
 - **Safety lane rules:** depth frame → haptic in < 50 ms, never on the main thread, never touches the network.
 - Secrets live in `DigiFinder/Resources/Secrets.plist` (gitignored; keys `GeminiAPIKey`, `GeminiModel`, `OFFContact`), read at runtime. Missing file → online extras off ("Online help isn't set up."); the app still builds and runs. Never hardcode keys.
 - **`tools/` comes from Appendix A, copied exactly. Do not rewrite, refactor or "improve" it.** Cloud agents never run it (several-GB download). It runs once on the Mac (§4.5), by a human or a terminal coding agent, and its outputs go to `DigiFinder/Resources/`. Edit `aisle_map.json` only when asked. If `products.sqlite` is missing, the app must still work from `extraProducts` (§7.2).
@@ -580,7 +584,7 @@ Danger (§5.3) and stairs (§5.4) run underneath every phase.
 - **Gemini item finder** (online, owner decision; YOLO OIV7 + label OCR miss many items): `SessionGeminiFinder` (runner) asks
   Gemini about every ~2 s whether the goal (brand, product, variant, form, or "a household object") is in the latest Stream B
   frame, in grocery and general places alike. The on-device finder keeps running; whichever sees it first reports.
-  - Prompt: "This photo is from a camera on a blind person's chest. Find: <goal>. If it is visible, give its bounding box as box_2d [ymin, xmin, ymax, xmax] on a 0–1000 scale, your confidence 0–1, and a 3–6 word description of what you see. If it is not visible, set found false and give one short hint (at most 12 words) about where it is likely to be relative to this photo, using clock positions (12 = straight ahead, 3 = right, 9 = left), or an empty hint."
+  - Prompt: "This photo is from a camera on a blind person's chest. Find: <goal>. If it is visible, give its bounding box as box_2d [ymin, xmin, ymax, xmax] on a 0–1000 scale, your confidence 0–1, and a 3–6 word description of what you see. If it is not visible, set found false. hint: AT MOST 8 WORDS, only where to turn or look, as a clock position (12 = straight ahead, 3 = right, 9 = left), for example 'Try 3 o'clock.' Never describe the photo or say what you see or don't see; no useful direction → empty hint." (§0 spoken-line rule.)
   - **Found** (confidence ≥ 0.5): Perception follows the box frame to frame on Stream B (`VNTrackObjectRequest` +
     `VNSequenceRequestHandler`, upright via `CaptureOrientation`, flip setting included), clock from `PerceptionFrameGeometry`,
     LiDAR at the box center → the usual `.itemSeen`, so every item rule above applies unchanged. Nothing extra is spoken.
@@ -655,21 +659,34 @@ Danger (§5.3) and stairs (§5.4) run underneath every phase.
 **Threat level, not proximity (owner decision).** The app supplements the cane, so being close never alerts by itself. Each obstacle in the path (|x| ≤ 0.35 m) is scored from its own motion and what YOLO says it is:
 - **High → vibrate + speak:** something moving toward the user on its own: closing speed minus the user's walking (~1 m/s) ≥ 0.4 m/s for known movers (person, cart, stroller, wheelchair, bicycle, dog…) or ≥ 0.8 m/s for unlabeled shapes, contact within 2.5 s and 4 m.
 - **Low → speak only, no vibration:** while walking, a chest/head-height obstacle that doesn't reach the floor (open cabinet door, sign, shelf edge; the cane passes under it), contact within 2 s and 2.5 m.
-- **None:** walls, shelves, tables, boxes, standing people the cane will touch, things off to the side, anything within 0.8 m of a user who is standing or sitting still.
-- 3 consecutive frames; never while rotating > 1.5 rad/s.
+- **None:** walls, shelves, tables and chairs (YOLO labels them; they still only alert if they move toward the user), boxes, standing people the cane will touch, things off to the side, anything within 0.8 m of a user who is standing or sitting still.
+- Never while rotating > 1.5 rad/s.
+
+**Alert profiles by place (owner decision, `ThreatProfile`).** The place check picks how sensitive alerts are; the alert itself (one vibration + the line) is the same everywhere, and so are the YOLO obstacle classes.
+
+| | Store (grocery, sensitive) | General (school, campus, anywhere else, unknown; calm) |
+|---|---|---|
+| In path | \|x\| ≤ 0.35 m now | where it will be at contact (x + sideways speed × TTC) within 0.25 m: someone crossing in front doesn't alert, someone cutting in does |
+| Approach (mover / other) | ≥ 0.4 / ≥ 0.8 m/s | ≥ 0.8 / ≥ 1.2 m/s |
+| Contact within | 2.5 s, 4 m | 1.5 s, 2.5 m |
+| Frames in a row | 3 | 5 |
+| Cooldown per obstacle | 5 s | 10 s |
+| Crowd (≥ 4 people in view) | no change | only alert when contact is within 1 s |
+
+Sideways speed: least-squares slope of the obstacle's x over ~0.5 s. The general profile is the default until the place check says grocery store.
 
 **Steer:** scan headings ±5° steps up to the LiDAR's visible field (~±25° on the lanyard) for the nearest 0.7 m-wide gap open ~1 m past the obstacle (2–3 m), closest to straight ahead, ties away from the obstacle. Spoken as a clock position (11 / 1 at least). Nothing open → "stop. Turn slowly."
 
 **Alert sequence**
-1. High threat only: 2–3 strong vibrations (Core Haptics, ~150 ms pulses, ~100 ms apart).
+1. High threat only: one strong vibration (Core Haptics, ~300 ms; owner decision, every place).
 2. Cancel any recording and stop any speech (a cancelled recording sends no event).
 3. "<Object> ahead, steer to <N> o'clock" / "<Object> ahead, stop. Turn slowly." / "<Object> ahead" (no distance: short line).
 4. If a recording was cut → "Say that again." (the user presses volume up to answer).
 5. Still closing ~2 s later → vibrations once more (no speech; high threats only).
 6. Way straight ahead open ≥ 2.5 m for 0.5 s (within 20 s of the alert) → "Clear ahead, about N meters. Walk straight." Then **recalculate** the current step and speak a fresh prompt.
-7. Cooldown ~5 s per obstacle.
+7. Cooldown per obstacle from the profile (store 5 s, general 10 s).
 
-**Motion state only (owner decision):** the rules above depend on Walking / Standing (`motion.isWalking`) and nothing else. Walking → movers approaching + head-height overhangs; Standing → only movers approaching, and nothing within 0.8 m (which covers the user's hand and the held item at the shelf). The task phase and the place (store or not) never change alerts: there is no shelf mode. Stairs and the phone-flipped check run only while walking. LiDAR distance to the shelf (Pick) feeds "The shelf is about one step ahead."
+**Motion state only (owner decision):** the rules above depend on Walking / Standing (`motion.isWalking`) and nothing else. Walking → movers approaching + head-height overhangs; Standing → only movers approaching, and nothing within 0.8 m (which covers the user's hand and the held item at the shelf). The task phase never changes alerts (there is no shelf mode); the place only picks the profile above. Stairs and the phone-flipped check run only while walking. LiDAR distance to the shelf (Pick) feeds "The shelf is about one step ahead."
 
 **Fallback (no LiDAR):** YOLO box tracking, `TTC ≈ Δt·h/Δh`, middle 50% band. Compiles; accuracy not required.
 
@@ -823,18 +840,26 @@ Speech speed and voice (English only); units (meters/steps); tones/danger-haptic
 
 ```
 ┌──────────────────────────────────┐
-│  Finding coffee                  │  current step (largest text)
-│  9 o'clock, aisle 6              │  last message spoken
+│                             (🐞) │  Debug (small, judges only)
 │                                  │
-│  ┌────────────────────────────┐  │
-│  │           TALK             │  │  = volume up (when still)
-│  └────────────────────────────┘  │
-│  Volume ↑ talk · Volume ↓ done   │  hint line
-│  ● LiDAR  ● Offline DB  ● Online │  status chips
-│  [ SETUP ]            [ DEBUG ]  │
+│      full-bleed 0.5× preview     │  hidden from VoiceOver
+│                                  │
+│               ( ● )              │  record button on the bar's top edge
+│ ┌──────────────────────────────┐ │
+│ │ [Detect]            Settings │ │  dark bottom bar
+│ └──────────────────────────────┘ │
 └──────────────────────────────────┘
 ```
-- High contrast, Dynamic Type, ≥ 60 pt targets, VoiceOver labels; step and message announced on change.
+- Figma design (owner, 2026-10-04). Design only: behaviour is §5.10.
+- **Record button:** solid red-orange (#E2533A) circle in a grey glass ring when stopped; an orange rounded square on
+  a glass circle while the stream runs. Tap = volume down (start / stop). Always usable, walking or not.
+- **Detect** (left) = the camera page (formerly "Home"): orange on a grey glass tile when shown. **Settings** (right)
+  = the setup page, replaces the camera view; ignored while walking.
+- **Debug** (top right): small round button, opens the overlay; ignored while walking.
+- **No flip button:** which way up the phone hangs is detected from gravity (`OrientationTracker`, ~1 s hold). Every
+  camera-image direction follows it; LiDAR alerts are gravity-based already.
+- No caption, status chips, hint line or drag-to-hear. No UI haptics. Reduce Motion: no button animation. Dynamic
+  Type on tile labels (capped at accessibility2). VoiceOver order: Start/Stop, Detect, Settings, Debug.
 - **Setup:** one sheet (§5.13).
 - **Debug overlay (judges):** 0.5× preview with YOLO/OCR boxes and hand point, LiDAR heatmap with corridor, steer lanes, stairs profile, TTC, step, capture costs, speech queue. Simulator: text field for typed requests + event buttons.
 

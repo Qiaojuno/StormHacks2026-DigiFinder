@@ -167,3 +167,66 @@ xcodebuild -scheme DigiFinder -destination 'generic/platform=iOS Simulator' -der
   YOLO allowlist = obstacle classes + Stairs only. Store-flow tests keep running with the flag on (harness `onDevice:`).
 - Gemini finder photos 640 px / JPEG 0.6 (~1.6 s per answer vs 4–9 s at 1024 px); Gemini timeout 10 s. Key with $4 prepaid cap verified 2026-10-04.
 - Gemini keys: `GeminiAPIKey` (main) + optional `GeminiFallbackAPIKey` in Secrets.plist. A refused key (401/402/403/429) falls back to the other for the same request and is skipped for 5 min (`NetworkKeyChooser`).
+- Alert profiles by place (`ThreatProfile` in Core): grocery store = sensitive (old values); general (school, campus,
+  unknown, the default) = calm: faster/closer approach needed, collision-course check from sideways speed, 5 frames,
+  10 s cooldown, and with ≥ 4 people in view only alerts when contact is within 1 s. `SessionRunner` sets it from the
+  place check / manual setting. Danger vibration is now one pulse everywhere. YOLO allowlist adds Table and Chair.
+  Verify on device: crowded hallway (should stay quiet unless someone walks straight into you), store aisle with carts.
+- Demo: table alerts (`TableAlertRule` in Core). While walking and YOLO sees a table (Table, Coffee table, Kitchen &
+  dining room table, Desk, Billiard table), a lower corridor (down to ~0.55 m above the floor) is checked; a table in the
+  path within 1.5 m for 3 frames → one vibration + "Table ahead, steer to N o'clock". No 2 s repeat buzz, no "Clear
+  ahead", 20 s cooldown for any table. Standing still: never. To remove after the demo: the block in SafetyController.
+- Gemini lines wait for alerts (owner decision): search hints and Ask answers that arrive during an alert are held
+  (`SessionState.afterDanger`, newest hint only) and played when it clears; a new alert keeps them waiting; stop drops
+  them. In speech, an alert no longer drops a reply that was playing or waiting: it replays after the alert(s).
+  Guidance still goes stale as before.
+- Demo: fences / barricades (`BarrierAlertRule`, LiDAR only: YOLO OIV7 has no fence/barricade/cone class). While
+  walking: ≥ 5 of 7 10-cm columns across the path blocked at waist height (0.3 m above the floor to 0.2 m below the
+  phone) within 1.5 m, nearly nothing above → one vibration + "Barrier ahead, steer to N o'clock", 20 s cooldown.
+  Skipped for tables, stairs, and YOLO movers (carts). Verify on device: may fire on low shelf ends / counters.
+- Tables buzz once from up to 3 m (was 1.5 m); table corridor reaches 3.5 m.
+- Wet floor signs (owner decision; not an OIV7 class): on-device text reader (~1 Hz, walking only) finds "wet floor" /
+  "caution" (+ Spanish / French) → `.wetFloorSign(clock:)` → one vibration (`Effect.buzz`) + "Wet floor sign, N o'clock."
+  (stairs priority), 20 s cooldown. Needs the words readable (~2–3 m, facing the camera).
+- Crowd warning: every Gemini item-finder scan also returns `crowded` (about 6+ people within a few meters) →
+  `.crowded` → "Lot of people around you, be careful." as a reply, at most once per 60 s, held during alerts.
+  Only while a search runs (that's when Gemini scans).
+- After an item (found, not found, or stopped): no "What's next?" and no "Shopping done" follow-up. One line:
+  "I couldn't find <item>." / "Got it…" then "Press volume up to look for something else." The stream stays on.
+- Obstacle detection (YOLO, 10 fps) runs whenever the stream is on, in every phase incl. idle with no search
+  (already true; locked by `DetectionAlwaysOnTests`).
+- Table rule reworked (owner decision): while walking, a table in the path buzzes once at 0.8 m ("Table ahead, steer
+  to N o'clock"), tracked from 1.5 m. If the tabletop drops below the chest camera's view (last seen ≤ 1.1 m,
+  centered, within 1 s) it alerts then. One buzz per table: re-armed after 3 s with no table within 1.5 m. Standing
+  still or turning fast: nothing (no tracking).
+- Barrier fix (owner report: table seen, barricade missed): the barrier check no longer turns off whenever YOLO sees a
+  table anywhere (only skips if the barrier itself is labeled a table / person / cart). Looser shape: 4 of 7 columns,
+  2 pts per column, range 2 m, above-band allowance max(40, a quarter of the barrier's points). Debug overlay has a
+  "barrier:" line (FOUND / n/7 columns / pts above (wall?) / not a line across / labeled X / standing …).
+  Hardware limit: iPhone LiDAR is low resolution; thin see-through rails barely show up, solid panels do.
+- Barrier buzz range 3 m (owner: 2 m was too late).
+- Barrier alerts always give a clock direction: no fully open gap → the least blocked heading (the side with the most room) instead of "stop. Turn slowly." (`steerDirection(alwaysClock:)`).
+- Buttons (owner decision): volume DOWN (bottom) starts the stream when stopped ("Started. Press volume up to tell me
+  what to find.", runs the one-time place check) and stops everything when running. Volume UP (top) ONLY records a
+  request; when stopped it says "Press volume down to start.". The on-screen red button = volume down. App opens with
+  "Press volume down to start." Walkthrough line updated (and "one strong vibration").
+- Main screen redesigned to the Figma (design only, no behaviour change): dark rounded bottom bar with Detect (the
+  camera page, formerly Home) and Settings tiles, big red-orange record button on the bar's top edge (circle in a grey
+  glass ring when stopped, orange square on glass while running; tap = volume down as before), big Flip tile top left,
+  small round Debug button top right. Tokens in `UITheme` (brand #E2533A, bar #211816, glass). Reduce Motion respected.
+  Plan §6 rewritten to match. Checked against the Figma in the iPhone 17 Pro Simulator (button ring ≈ 36% of width).
+- Camera flip is automatic (owner decision): `OrientationTracker` (Core) reads gravity along the phone's long axis
+  each runner tick; upside down (g.y > +0.5) or upright (< -0.5) held ~1 s sets `CaptureOrientation`, which every
+  camera-image direction uses (Gemini photos and boxes, item tracker clock, signs, wet floor sign, YOLO label
+  projection). The tracked box and any in-flight Gemini answer are dropped on a flip (`SessionGeminiFinder.restart`).
+  LiDAR alerts were already gravity-based. Flip tile, confirm dialog and the `cameraUpsideDown` setting removed.
+  Debug overlay shows "upright / UPSIDE DOWN (g.y …)". Verify on device: g.y ≈ -1 upright on the lanyard.
+- Spoken-line rule (owner): ≤ 8 words per line, fewer is better, actionable only (§0). Every SessionPhrases line
+  shortened (e.g. "Started. Volume up to ask.", "Volume up for another item.", "Coffee, within reach.", "Stairs up,
+  about 8 steps, 3 meters."). Gemini prompts (item hint, Ask answer) ask for ≤ 8 actionable words and no scene
+  narration; code enforces it: `capWords` cuts Gemini text to 8 words, hints with no direction word are dropped.
+  Walkthrough lines shortened too. `PhraseLengthTests` fails if any line goes over 8 words.
+- Search persistence (owner decision): in a grocery store (place check or manual setting) the Gemini-guided search
+  never gives up; elsewhere still ~60 s → "I couldn't find X.". "Turn slowly." replaced: every ~15 s without a
+  sighting → "Stop and look around. I need context."; after ~4 s standing still (≈ two Gemini scans) → "Keep going.";
+  a sighting answers it instead; still walking after 20 s → asked again. Tests: SessionContextTests.

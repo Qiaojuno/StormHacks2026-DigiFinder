@@ -36,8 +36,8 @@ final class AppViewModel {
         let runner = SessionRunner(env: env)
         self.runner = runner
         settings = UISettingsStore()
-        // Before capture starts: which way the phone hangs on the lanyard.
-        CaptureOrientation.set(upsideDown: settings.settings.cameraUpsideDown)
+        // Which way up the phone hangs is detected from gravity by the runner (owner decision); start upright.
+        CaptureOrientation.set(upsideDown: false)
 
         let frames = env.frames
         self.frames = frames
@@ -105,34 +105,6 @@ final class AppViewModel {
 
     /// The Home background shows the live 0.5× feed.
     func attachPreview(_ layer: AVCaptureVideoPreviewLayer) { frames.attachPreview(layer) }
-
-    // MARK: Flip camera (lanyards that hang the phone upside down): always confirm, read aloud
-
-    /// The Confirm / Cancel dialog is showing.
-    var showFlipConfirm = false
-    var isCameraFlipped: Bool { settings.settings.cameraUpsideDown }
-
-    static let flipQuestion = "Flip the camera? Use this if the phone hangs upside down on the lanyard. Confirm or cancel."
-    static let unflipQuestion = "Turn the camera back to normal? Confirm or cancel."
-
-    func flipTapped() {
-        guard !isWalking else { return }
-        showFlipConfirm = true
-        runner.speakScreenText(isCameraFlipped ? Self.unflipQuestion : Self.flipQuestion)
-    }
-
-    func confirmFlip() {
-        showFlipConfirm = false
-        let flipped = !isCameraFlipped
-        settings.settings.cameraUpsideDown = flipped
-        CaptureOrientation.set(upsideDown: flipped)
-        runner.speakScreenText(flipped ? "Camera flipped." : "Camera back to normal.")
-    }
-
-    func cancelFlip() {
-        showFlipConfirm = false
-        runner.speakScreenText("Cancelled.")
-    }
 
     func playWalkthrough() {
         runner.speakWalkthrough(UIWalkthrough.lines)

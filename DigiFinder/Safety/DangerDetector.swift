@@ -21,8 +21,12 @@ final class DangerDetector {
         var emergency = false
     }
 
-    /// Frames in a row a threat must hold before it alerts (fewer false alarms than the spec's 2). Verify on device.
-    static let consecutiveFrames = 3
+    /// Alert sensitivity by place (store: sensitive; general: calm, collision course, crowd damping).
+    var profile: ThreatProfile = .general {
+        didSet { if profile != oldValue { reset() } }
+    }
+    /// Sideways-speed window (s).
+    static let lateralWindow = 0.5
     /// Lanyard swing: no alerts while rotating faster than this (rad/s).
     static let maxRotation: Double = 1.5
     /// Steering is only worked out for obstacles nearer than this.
@@ -31,10 +35,12 @@ final class DangerDetector {
     private var rule = GeometryDangerRule()
     private var streak = 0
     private var walking = false
+    /// Recent (time, lateral offset) of the nearest obstacle, for its sideways speed.
+    private var lateral: [(t: Double, x: Float)] = []
 
     /// `label`: YOLO name of the obstacle (projected into Stream B); known movers need less evidence.
     func evaluate(_ pts: [Vec3], t: Double, rotationRate: Double, walking isWalking: Bool,
-                  floorY: Float?, label: (GeometryObstacle) -> String?) -> Reading {
+                  floorY: Float?, peopleInView: Int = 0, label: (GeometryObstacle) -> String?) -> Reading {
         // The corridor changes with the motion state, so the distance history restarts with it.
         if isWalking != walking {
             walking = isWalking
@@ -49,16 +55,19 @@ final class DangerDetector {
         var r = Reading(obstacle: obstacle, closingSpeed: closing, timeToContact: rule.history.timeToContact)
         let rotating = !rotationRate.isFinite || abs(rotationRate) >= Self.maxRotation
         if let o = obstacle {
+            lateral.append((t, o.x))
+            lateral.removeAll { t - $0.t > Self.lateralWindow || $0.t > t }
             let input = ThreatInput(distance: o.distance, x: o.x, closing: closing, walking: isWalking,
                                     grounded: isGrounded(pts, obstacle: o, floorY: floorY, corridor: corridor),
-                                    label: label(o))
-            (r.threat, r.reason) = assessThreat(input)
+                                    label: label(o), lateralSpeed: Self.slope(lateral), peopleInView: peopleInView)
+            (r.threat, r.reason) = assessThreat(input, profile: profile)
             if rotating { r.reason = "rotating" }
         } else {
+            lateral.removeAll()
             r.reason = "path clear"
         }
         streak = (r.threat != .none && !rotating) ? streak + 1 : 0
-        r.emergency = streak >= Self.consecutiveFrames
+        r.emergency = streak >= profile.consecutiveFrames
         if let o = obstacle, o.distance < Self.steerRange {
             r.steer = steerDirection(pts, obstacleX: o.x, obstacleZ: o.distance, corridor: corridor)
         }
@@ -68,5 +77,17 @@ final class DangerDetector {
     func reset() {
         rule.reset()
         streak = 0
+        lateral.removeAll()
+    }
+
+    /// Least-squares slope (m/s) of x over time; nil with too few samples or no time spread.
+    static func slope(_ h: [(t: Double, x: Float)]) -> Float? {
+        guard h.count >= 3, let first = h.first?.t, let last = h.last?.t, last - first >= 0.15 else { return nil }
+        let n = Double(h.count)
+        let mt = h.map(\.t).reduce(0, +) / n
+        let mx = h.map { Double($0.x) }.reduce(0, +) / n
+        var num = 0.0, den = 0.0
+        for p in h { num += (p.t - mt) * (Double(p.x) - mx); den += (p.t - mt) * (p.t - mt) }
+        return den > 0 ? Float(num / den) : nil
     }
 }

@@ -16,7 +16,7 @@ final class SessionGeminiOnlyTests: XCTestCase {
         h.startGoal(SessionFixtures.coffee)
         h.send(.motion(yawDegrees: 0, steps: 0, walking: false))
         let e = h.send(.itemSeen(clock: 12, distance: 0.9))
-        XCTAssertEqual(said(e).first, "Coffee is right in front of you, within reach.")
+        XCTAssertEqual(said(e).first, "Coffee, within reach.")
         XCTAssertTrue(e.contains(.markDone(SessionFixtures.coffee)))
         XCTAssertNotEqual(h.state.step, .pick, "no pointing step without on-device label checks")
     }

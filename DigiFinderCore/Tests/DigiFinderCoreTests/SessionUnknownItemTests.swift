@@ -26,7 +26,7 @@ final class SessionUnknownItemTests: XCTestCase {
         var h = SessionHarness(online: true)
         h.send(.routed(.unknownProduct("tahini", .unspecified)))
         XCTAssertEqual(said(h.advance(7.5)), [])
-        XCTAssertEqual(said(h.advance(0.5)), ["I don't have tahini in my list. I'll look for the word on signs and labels."])
+        XCTAssertEqual(said(h.advance(0.5)), ["Looking for tahini on signs."])
         XCTAssertEqual(h.state.goal, Goal(product: "tahini"))
         XCTAssertEqual(said(h.send(.assistAnswer(say: "Late.", find: nil))), [], "late answers are dropped")
     }
@@ -47,7 +47,7 @@ final class SessionUnknownItemTests: XCTestCase {
         var h = SessionHarness(online: true)
         lookUp("tahini", &h)
         let hit = Goal(product: "tahini", signWords: ["sesame pastes", "spreads"])
-        XCTAssertEqual(said(h.send(.productLookedUp(hit))), ["I'll look for the word on signs and labels."])
+        XCTAssertEqual(said(h.send(.productLookedUp(hit))), ["Looking for the word on signs."])
         XCTAssertEqual(h.state.goal, hit)
         let sign = AisleSign(number: "4", words: ["Spreads", "Honey"], clock: 1)
         XCTAssertEqual(said(h.send(.signs([sign]))), ["1 o'clock, aisle 4, spreads and honey."])
@@ -57,14 +57,14 @@ final class SessionUnknownItemTests: XCTestCase {
         var h = SessionHarness(online: true)
         lookUp("tahini", &h)
         let e = h.send(.productLookedUp(nil))
-        XCTAssertEqual(said(e), ["I'll look for the word on signs and labels."])
+        XCTAssertEqual(said(e), ["Looking for the word on signs."])
         XCTAssertTrue(e.contains(.setTarget(Goal(product: "tahini"), candidates: [], destination: nil)))
     }
 
     func testLookupTimeoutIsAWordSearch() {
         var h = SessionHarness(online: true)
         lookUp("tahini", &h)
-        XCTAssertEqual(said(h.advance(8)), ["I'll look for the word on signs and labels."])
+        XCTAssertEqual(said(h.advance(8)), ["Looking for the word on signs."])
         XCTAssertEqual(h.state.goal, Goal(product: "tahini"))
         XCTAssertEqual(said(h.send(.productLookedUp(nil))), [], "late results are ignored")
     }
@@ -73,7 +73,7 @@ final class SessionUnknownItemTests: XCTestCase {
     func testOfflineWordSearchEndToEnd() {
         var h = SessionHarness()
         let e = h.send(.routed(.unknownProduct("toothpaste", .unspecified)))
-        XCTAssertEqual(said(e), ["I don't have toothpaste in my list. I'll look for the word on signs and labels."])
+        XCTAssertEqual(said(e), ["Looking for toothpaste on signs."])
         let goal = Goal(product: "toothpaste")
         XCTAssertTrue(e.contains(.setTarget(goal, candidates: [], destination: nil)))
         XCTAssertFalse(e.contains(.lookupProduct("toothpaste")))
@@ -84,13 +84,13 @@ final class SessionUnknownItemTests: XCTestCase {
         h.send(.arrivedAtAisle(clock: 3), .motion(yawDegrees: 90, steps: 0, walking: true))
         XCTAssertEqual(h.state.step, .inAisle)
         XCTAssertEqual(said(h.send(.signs([AisleSign(words: ["Toothpaste"], clock: 3)]))),
-                       ["Stop here. Turn to the shelf at 3 o'clock."])
+                       ["Stop. Shelf at 3 o'clock."])
         h.send(.motion(yawDegrees: 90, steps: 3, walking: false))
         XCTAssertEqual(h.state.step, .pick)
         h.grab("Colgate toothpaste")
         let label = ProductInfo(code: "", name: "toothpaste", brand: "Colgate")
         let done = h.send(.confirmed(label, isGoal: true))
-        XCTAssertEqual(said(done).first, "This says Colgate toothpaste. Put it in your cart.")
+        XCTAssertEqual(said(done).first, "This says Colgate toothpaste.")
         XCTAssertTrue(done.contains(.markDone(goal)))
     }
 

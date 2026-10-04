@@ -86,6 +86,9 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
     private var pointRegions: [PerceptionProductRegion] = []
     private var lastPointText = -Double.infinity
     private var lastDoorText = -Double.infinity
+    /// Wet floor sign text check while walking (owner decision), at most this often (s).
+    private var lastWetFloorText = -Double.infinity
+    static let wetFloorTextInterval = 1.0
     private var lastPointed: PointedProduct??
     private var lastPointedEmit = -Double.infinity
     private var hintRegion: NormRect?
@@ -380,7 +383,14 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         // }
         let doText = false
         _ = doorInView
-        let requests: [VNRequest] = []
+        var requests: [VNRequest] = []
+        // Wet floor sign (owner decision): the text reader, ~1 Hz while walking. YOLO has no class for it.
+        let wetFloorText = motion.isWalking && t - lastWetFloorText >= Self.wetFloorTextInterval
+        if wetFloorText {
+            lastWetFloorText = t
+            textFast.setRegion(nil)
+            requests.append(textFast.request)
+        }
         // if doText { textFast.setRegion(nil); requests.append(textFast.request) }
         // if mode == .pointing { requests.append(hands.request) }
         var lines: [PerceptionTextRegion] = []
@@ -388,11 +398,16 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         if !requests.isEmpty {
             let handler = VNImageRequestHandler(cvPixelBuffer: f.pixelBuffer, orientation: CaptureOrientation.visionOrientation, options: [:])
             if (try? handler.perform(requests)) != nil {
-                if doText { lines = textFast.results() }
+                if doText || wetFloorText { lines = textFast.results() }
                 if mode == .pointing { hand = hands.result() }
             }
         }
         if doText && mode == .idle { lastDoorText = t }
+        if wetFloorText, isWetFloorSignText(lines.map(\.text)) {
+            let words = ["wet", "floor", "caution", "piso", "sol", "plancher"]
+            let line = lines.first { l in words.contains { l.text.lowercased().contains($0) } } ?? lines.first
+            if let b = line?.box { emit(.wetFloorSign(clock: geometry.clock(b.x + b.width / 2))) }
+        }
         let depthAt: (NormPoint) -> Float? = { [depth] p in depthFrame.flatMap { depth.distance(at: p, $0) } }
         let heading = -motion.yawDegrees
         let steps = motion.steps

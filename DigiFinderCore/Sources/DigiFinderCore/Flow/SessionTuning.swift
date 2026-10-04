@@ -27,6 +27,10 @@ enum SessionTuning {
     static let reachMeters: Float = 1.2
     /// Not a store: "Turn slowly." repeat, and give up after this long with no sighting.
     static let nearbyPrompt = 15.0
+    /// After "Stop and look around…": standing still this long (≈ two Gemini scans) → "Keep going."
+    static let contextStill = 4.0
+    /// Still not stopped this long after asking → ask again.
+    static let contextReask = 20.0
     static let nearbyGiveUp = 60.0
     /// Farther item directions: when the direction changes, else at most this often.
     static let itemInterval = 3.0

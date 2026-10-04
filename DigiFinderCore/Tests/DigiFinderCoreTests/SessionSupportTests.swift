@@ -43,10 +43,9 @@ struct SessionHarness {
         if online { _ = session.handle(.system(.online(true))) }
         if started {
             _ = session.handle(.started)
-            // The app opens stopped: the first volume up starts the stream and the grocery check; an empty
-            // recording ends it so tests begin with the stream running and nothing recording.
-            _ = session.handle(.talkPressed)
-            _ = session.handle(.notUnderstood(noisy: false))
+            // The app opens stopped: volume down starts the stream and the grocery check (owner decision), so tests
+            // begin with the stream running and nothing recording.
+            _ = session.handle(.donePressed)
             if let g = grocery {
                 _ = session.handle(.placeClassified(PlaceAnswer(grocery: g, confidence: 0.9,
                                                                 scene: g ? "supermarket aisle" : "home kitchen")))
@@ -78,7 +77,7 @@ struct SessionHarness {
         send(.routed(.product(g, .unspecified)))
     }
 
-    /// Sign → "Stop. Aisle 6 is at 9 o'clock." → walking toward it (InAisle).
+    /// Sign → "Stop. Aisle 6, 9 o'clock." → walking toward it (InAisle).
     mutating func enterAisle(_ g: Goal = SessionFixtures.coffee) {
         startGoal(g)
         send(.signs([SessionFixtures.coffeeSign]))
@@ -126,9 +125,9 @@ final class SessionSupportTests: XCTestCase {
         XCTAssertEqual(SessionPhrases.list(["coffee", "tea", "milk"]), "coffee, tea and milk")
         XCTAssertEqual(SessionPhrases.findFirst(["coffee", "milk", "tea"]), "I'll find coffee first, then milk, then tea.")
         XCTAssertEqual(SessionPhrases.meters(0.8), "1 meter")
-        XCTAssertEqual(SessionPhrases.stairs(StairsObservation(up: false, distance: 2.6)), "Stairs going down, 3 meters, 12 o'clock.")
+        XCTAssertEqual(SessionPhrases.stairs(StairsObservation(up: false, distance: 2.6)), "Stairs down, 3 meters.")
         XCTAssertEqual(SessionPhrases.stairs(StairsObservation(up: true, distance: 4, steps: 10, more: true)),
-                       "Stairs going up, more than 10 steps, 4 meters, 12 o'clock.")
+                       "Stairs up, more than 10 steps, 4 meters.")
         XCTAssertEqual(SessionGeometry.degrees(forClock: 9), -90)
         XCTAssertEqual(SessionGeometry.angle(-90, from: 90), 180)
     }

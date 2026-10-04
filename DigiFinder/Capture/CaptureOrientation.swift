@@ -3,7 +3,8 @@ import Foundation
 import ImageIO
 import DigiFinderCore
 
-/// Which way the phone hangs on the lanyard (owner decision: a "flip camera" button). One setting, read everywhere:
+/// Which way the phone hangs on the lanyard (owner decision: detected from gravity by the runner, `OrientationTracker`;
+/// no button). One value, read everywhere:
 /// Vision's image orientation, stills, debug images, the live preview, and (in Core) every sensor ↔ portrait
 /// mapping and left/right direction via `Geometry.cameraUpsideDown`.
 enum CaptureOrientation {

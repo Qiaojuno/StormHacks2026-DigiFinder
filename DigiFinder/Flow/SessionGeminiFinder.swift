@@ -60,6 +60,13 @@ final class SessionGeminiFinder {
         task = Task { [weak self] in await self?.run(new.goal, generation: generation) }
     }
 
+    /// The camera flipped: drop the answer in flight (its photo was the old way up) and scan again now.
+    func restart() {
+        guard let s = search else { return }
+        search = nil
+        update(s)
+    }
+
     private func current(_ generation: Int) -> Bool { !Task.isCancelled && generation == self.generation }
 
     private func run(_ goal: Goal, generation: Int) async {
@@ -98,6 +105,7 @@ final class SessionGeminiFinder {
     /// Found → track the box (Perception reports the sightings); not found → stop tracking, pass the hint on.
     private func apply(_ finding: ItemFinding?) -> Double {
         status.answer(finding)
+        if finding?.crowded == true { onEvent?(.crowded) }            // the session rate-limits the warning
         if let f = finding, f.found, let box = f.box {
             perception.trackTarget(box)
             return Self.trackingInterval

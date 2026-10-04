@@ -56,7 +56,7 @@ final class SessionNearbyTests: XCTestCase {
         h.advance(10)
         XCTAssertEqual(h.state.step, .findAisle)
         let found = h.send(.itemSeen(clock: 1, distance: 0.8))
-        XCTAssertEqual(said(found).first, "Phone is right in front of you, within reach.")
+        XCTAssertEqual(said(found).first, "Phone, within reach.")
         XCTAssertTrue(found.contains(.chime(.done)))
         XCTAssertTrue(found.contains(.markDone(phone)))
     }
@@ -66,8 +66,8 @@ final class SessionNearbyTests: XCTestCase {
         _ = h.session.setNearbyMode(true)
         h.send(.routed(.product(Goal(product: "phone", visualClass: "Mobile phone"), .unspecified)))
         let e = said(h.advance(61))
-        XCTAssertTrue(e.contains("Turn slowly."))
-        XCTAssertTrue(e.contains("I can't find phone nearby. Try another spot."))
+        XCTAssertTrue(e.contains("Stop and look around. I need context."))
+        XCTAssertTrue(e.contains("I couldn't find phone."))
     }
 
     func testManualOverridesWin() {
@@ -82,5 +82,45 @@ final class SessionNearbyTests: XCTestCase {
         XCTAssertEqual(said(h.advance(3.5)), ["I can't see any signs. Turn slowly."])
         XCTAssertEqual(VoiceCommandParser.parse("it s nearby"), .nearby(true))
         XCTAssertEqual(VoiceCommandParser.parse("store mode"), .nearby(false))
+    }
+}
+
+/// Owner decisions: a grocery search never gives up; context is asked for with "Stop and look around…", then "Keep going."
+final class SessionContextTests: XCTestCase {
+    func testGroceryStoreNeverGivesUp() {
+        var h = SessionHarness(grocery: true, onDevice: false)
+        h.send(.motion(yawDegrees: 0, steps: 0, walking: true))
+        h.startGoal(SessionFixtures.coffee)
+        let lines = said(h.advance(300))
+        XCTAssertFalse(lines.contains { $0.contains("couldn't find") }, "\(lines)")
+        XCTAssertNotNil(h.state.goal)
+    }
+
+    func testStopLookAroundThenKeepGoing() {
+        var h = SessionHarness(grocery: true, onDevice: false)
+        h.send(.motion(yawDegrees: 0, steps: 0, walking: true))
+        h.startGoal(SessionFixtures.coffee)
+        XCTAssertTrue(said(h.advance(15)).contains("Stop and look around. I need context."))
+        XCTAssertFalse(said(h.advance(5)).contains("Keep going."), "still walking")
+        h.send(.motion(yawDegrees: 0, steps: 0, walking: false))
+        XCTAssertFalse(said(h.advance(3)).contains("Keep going."), "not long enough")
+        XCTAssertTrue(said(h.advance(1.5)).contains("Keep going."))
+    }
+
+    func testASightingAnswersInsteadOfKeepGoing() {
+        var h = SessionHarness(grocery: true, onDevice: false)
+        h.send(.motion(yawDegrees: 0, steps: 0, walking: true))
+        h.startGoal(SessionFixtures.coffee)
+        h.advance(15)
+        h.send(.itemSeen(clock: 2, distance: 4))
+        h.send(.motion(yawDegrees: 0, steps: 0, walking: false))
+        XCTAssertFalse(said(h.advance(6)).contains("Keep going."))
+    }
+
+    func testNeverSaysTurnAround() {
+        var h = SessionHarness(grocery: true, onDevice: false)
+        h.send(.motion(yawDegrees: 0, steps: 0, walking: true))
+        h.startGoal(SessionFixtures.coffee)
+        XCTAssertFalse(said(h.advance(120)).contains { $0.lowercased().contains("turn") })
     }
 }

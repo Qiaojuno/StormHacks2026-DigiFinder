@@ -22,10 +22,13 @@ final class SessionSafetyTests: XCTestCase {
         XCTAssertEqual(h.state.step, .idle)
         XCTAssertEqual(said(h.advance(30)), [], "no prompts or timers while stopped")
         XCTAssertEqual(said(h.send(.signs([SessionFixtures.coffeeSign]))), [])
-        XCTAssertEqual(h.send(.donePressed), [], "stop again: nothing")
-        let start = h.send(.talkPressed)
-        XCTAssertEqual(start, [.setStreaming(true), .stopSpeech, .listen], "volume up restarts the stream and records")
+        XCTAssertEqual(said(h.send(.talkPressed)), ["Press volume down to start."], "volume up only asks")
+        XCTAssertFalse(h.state.streaming)
+        let start = h.send(.donePressed)
+        XCTAssertEqual(Array(start.prefix(2)), [.setStreaming(true), .stopSpeech], "volume down restarts the stream")
+        XCTAssertFalse(start.contains(.listen), "starting doesn't record")
         XCTAssertTrue(h.state.streaming)
+        XCTAssertEqual(h.send(.talkPressed), [.stopSpeech, .listen], "volume up records")
     }
 
     func testDangerCutsTheRecordingAndAsksAgain() {
@@ -55,7 +58,7 @@ final class SessionSafetyTests: XCTestCase {
         var h = SessionHarness()
         h.reachShelf()
         h.send(.danger(cutRecording: false))
-        XCTAssertEqual(said(h.send(.dangerCleared)), ["Point at the shelf with one finger. Start at chest height."])
+        XCTAssertEqual(said(h.send(.dangerCleared)), ["Point at the shelf, chest height."])
     }
 
     func testStairsAnnouncedOnceWithPedometerCountdown() {
@@ -63,7 +66,7 @@ final class SessionSafetyTests: XCTestCase {
         h.startGoal(SessionFixtures.coffee)
         h.send(.motion(yawDegrees: 0, steps: 100, walking: true))
         let e = h.send(.stairs(StairsObservation(up: true, distance: 3, steps: 8)))
-        XCTAssertEqual(said(e, .stairs), ["Stairs going up, about 8 steps, 3 meters, 12 o'clock."])
+        XCTAssertEqual(said(e, .stairs), ["Stairs up, about 8 steps, 3 meters."])
         XCTAssertEqual(said(h.send(.stairs(StairsObservation(up: true, distance: 2.8, steps: 8)))), [], "once per staircase")
         XCTAssertEqual(said(h.send(.motion(yawDegrees: 0, steps: 102, walking: true))), [])
         XCTAssertEqual(said(h.send(.motion(yawDegrees: 0, steps: 103, walking: true)), .stairs), ["Stairs, 1 meter ahead."])
@@ -75,7 +78,7 @@ final class SessionSafetyTests: XCTestCase {
         h.send(.routed(.command(.lessDetail)))
         h.send(.talkPressed)
         let e = h.send(.stairs(StairsObservation(up: false, distance: 2, steps: 4)))
-        XCTAssertEqual(e, [.cancelListening, .say("Stairs going down, about 4 steps, 2 meters, 12 o'clock.", .stairs),
+        XCTAssertEqual(e, [.cancelListening, .say("Stairs down, about 4 steps, 2 meters.", .stairs),
                            .say("Say that again.", .reply)])
     }
 
@@ -84,7 +87,7 @@ final class SessionSafetyTests: XCTestCase {
         h.send(.stairs(StairsObservation(up: true, distance: 3, steps: 8)))
         h.advance(15)
         XCTAssertEqual(said(h.send(.stairs(StairsObservation(up: true, distance: 4, steps: 5)))),
-                       ["Stairs going up, about 5 steps, 4 meters, 12 o'clock."])
+                       ["Stairs up, about 5 steps, 4 meters."])
     }
 
     func testPositioningPrompts() {
@@ -102,14 +105,14 @@ final class SessionSafetyTests: XCTestCase {
         XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), [], "max once per 30 s")
         h.advance(20)
         XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), ["Phone may be flipped around."])
-        XCTAssertEqual(said(h.send(.positioning(.tooDark))), ["It's too dark for me to read here."])
+        XCTAssertEqual(said(h.send(.positioning(.tooDark))), ["Too dark to read here."])
     }
 
     func testStandingAtTheShelfSilencesTheFlippedCheck() {
         var h = SessionHarness()
         h.reachShelf()
         XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), [], "standing: Safety doesn't check, the session ignores it")
-        XCTAssertEqual(said(h.send(.positioning(.pointInFront))), ["Point in front of the phone, at chest height."])
+        XCTAssertEqual(said(h.send(.positioning(.pointInFront))), ["Point in front of the phone."])
         XCTAssertEqual(said(h.send(.positioning(.stepBack))), ["Step back a little."])
     }
 

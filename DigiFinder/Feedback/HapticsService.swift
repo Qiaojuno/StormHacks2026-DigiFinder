@@ -62,13 +62,11 @@ final class HapticsService {
     }
 
     private static func makeDangerPattern() -> CHHapticPattern? {
-        let pulse = 0.15, gap = 0.10
-        let events = (0..<3).map { i in
-            CHHapticEvent(eventType: .hapticContinuous,
-                          parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
-                                       CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.7)],
-                          relativeTime: Double(i) * (pulse + gap), duration: pulse)
-        }
-        return try? CHHapticPattern(events: events, parameters: [])
+        // Owner decision: one vibration in every place.
+        let event = CHHapticEvent(eventType: .hapticContinuous,
+                                  parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+                                               CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.7)],
+                                  relativeTime: 0, duration: 0.3)
+        return try? CHHapticPattern(events: [event], parameters: [])
     }
 }

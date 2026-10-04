@@ -4,7 +4,8 @@ import Foundation
 /// Pure state; the controller serializes calls.
 struct SafetyAlertPolicy {
     /// No second alert for the same obstacle within this many seconds.
-    static let cooldown: Double = 5
+    /// Same-obstacle cooldown (s); set from the threat profile (store 5 s, general 10 s).
+    var cooldown: Double = 5
     /// Still closing this long after the alert → vibrate once more (no speech).
     static let repeatAfter: Double = 2
     /// The path must stay open this long before `.dangerCleared`.
@@ -42,7 +43,7 @@ struct SafetyAlertPolicy {
         if let a = active {
             guard t - a.t >= Self.retargetAfter, !Self.same(a, label: label, x: x) else { return false }
         }
-        return !recent.contains { t - $0.t >= 0 && t - $0.t < Self.cooldown && Self.same($0, label: label, x: x) }
+        return !recent.contains { t - $0.t >= 0 && t - $0.t < cooldown && Self.same($0, label: label, x: x) }
     }
 
     mutating func didAlert(label: String, x: Float, t: Double) {
@@ -51,7 +52,7 @@ struct SafetyAlertPolicy {
         pulsed = false
         openSince = nil
         stoppedSince = nil
-        recent.removeAll { t - $0.t >= Self.cooldown || t < $0.t }
+        recent.removeAll { t - $0.t >= cooldown || t < $0.t }
         recent.append(a)
     }
 
