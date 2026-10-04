@@ -662,8 +662,16 @@ extension ShoppingSession {
 
     /// Within reach and Standing: Pick ("Point at it with one finger."), or found for a household object.
     mutating func reachItem(_ g: Goal) {
-        // No pointing / label check (owner decision): within reach ahead is found, for every item.
-        if !state.onDeviceItemSearch || (g.category == nil && g.visualClass != nil) {
+        // Owner decision: within reach is not the end. Ask the user to pick it up and hold it out; Gemini checks the
+        // held item (`.confirmed`): right → done, wrong → "Put it back." and the search resumes.
+        if !state.onDeviceItemSearch {
+            enter(.confirm)
+            state.marks.holdPromptAt = state.now
+            announce(SessionPhrases.withinReach(name(g)))
+            announce(SessionPhrases.pickUpHold)
+            return
+        }
+        if g.category == nil && g.visualClass != nil {
             // Household object (no label to read): within reach ahead is found.
             announce(SessionPhrases.withinReach(name(g)))
             out.append(.chime(.done))

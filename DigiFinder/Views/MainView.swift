@@ -21,6 +21,9 @@ struct MainView: View {
         .overlay(alignment: .topTrailing) {
             if model.page == .home { debugButton }
         }
+        .overlay(alignment: .top) {
+            if model.page == .home { UICaption(you: model.captionYou, app: model.captionApp, visible: model.captionVisible) }
+        }
         .fullScreenCover(isPresented: $showDebug) { DebugOverlayView(model: model) }
         .foregroundStyle(UITheme.foreground)
         .background(CaptureEventView(onTalk: { model.volumeUp() }, onDone: { model.volumeDown() }))
@@ -98,6 +101,44 @@ struct MainView: View {
     }
 
     static let buttonSize: CGFloat = 142
+}
+
+/// Speech caption (top centre): "You: …" and the app's last line, fading out. Hidden from VoiceOver: every line is
+/// already spoken. Leaves room for the Debug button on the right.
+struct UICaption: View {
+    let you: String
+    let app: String
+    let visible: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !you.isEmpty {
+                Text("You: \(you)")
+                    .font(.headline)
+                    .foregroundStyle(UITheme.secondary)
+                    .lineLimit(2)
+            }
+            if !app.isEmpty {
+                Text(app)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(UITheme.foreground)
+                    .lineLimit(2)
+            }
+        }
+        .multilineTextAlignment(.leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.black.opacity(0.6)))
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .padding(.leading, 16)
+        .padding(.trailing, 72)                               // the Debug button
+        .padding(.top, 8)
+        .opacity(visible ? 1 : 0)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: visible)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
 }
 
 /// Bottom-bar style tile (Figma): icon over a bold label; selected = orange on a grey glass tile.

@@ -205,6 +205,9 @@ struct SessionStepMarks: Equatable {
     /// "Stop and look around. I need context." was said; waiting for the user to stand still.
     var contextAskedAt: Double?
     var contextStillSince: Double?
+    /// Confirm (Gemini mode): last "Pick it up…" and walking since.
+    var holdPromptAt: Double?
+    var confirmWalkSince: Double?
 
     init(anchor: Double = 0) { scanAnchor = anchor; unclearAnchor = anchor }
 }

@@ -858,9 +858,12 @@ Speech speed and voice (English only); units (meters/steps); tones/danger-haptic
 - **Debug** (top right): small round button, opens the overlay; ignored while walking.
 - **No flip button:** which way up the phone hangs is detected from gravity (`OrientationTracker`, ~1 s hold). Every
   camera-image direction follows it; LiDAR alerts are gravity-based already.
-- No caption, status chips, hint line or drag-to-hear. No UI haptics. Reduce Motion: no button animation. Dynamic
+- **Speech caption** (top centre, left of Debug): "You: <words heard so far>" (live while recording) and the app's
+  last spoken line (alerts included), large bold text on a dark translucent box; fades ~5 s after the last change
+  (stays while recording). Hidden from VoiceOver (already spoken). For judges, low-vision users and helpers.
+- No status chips, hint line or drag-to-hear. No UI haptics. Reduce Motion: no button animation. Dynamic
   Type on tile labels (capped at accessibility2). VoiceOver order: Start/Stop, Detect, Settings, Debug.
-- **Setup:** one sheet (§5.13).
+- **Settings:** only the walkthrough ("How it works") and Credits at the very bottom (owner decision). Other settings are fixed at their defaults.
 - **Debug overlay (judges):** 0.5× preview with YOLO/OCR boxes and hand point, LiDAR heatmap with corridor, steer lanes, stairs profile, TTC, step, capture costs, speech queue. Simulator: text field for typed requests + event buttons.
 
 ```swift

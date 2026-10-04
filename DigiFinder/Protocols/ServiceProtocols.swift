@@ -86,6 +86,8 @@ protocol VoiceInput: AnyObject {
     func requestPermissions() async -> Bool
     /// Recognition hints, e.g. catalog brand names (§9 `contextualStrings`).
     var contextualStrings: [String] { get set }
+    /// The words heard so far in the running recording (screen caption). Any thread.
+    var onPartialTranscript: ((String) -> Void)? { get set }
 }
 
 protocol FeedbackOutput: AnyObject {
@@ -95,6 +97,8 @@ protocol FeedbackOutput: AnyObject {
     /// The danger vibration only (§5.3 step 5: still closing ~2 s later); speech is left alone. Any thread.
     func dangerPulse()
     func say(_ text: String, _ p: SpeechPriority)
+    /// Every line as it starts playing, alerts included (screen caption). Any thread.
+    var onLineSpoken: ((String) -> Void)? { get set }
     /// Stops and clears lines below stairs only; never cuts a danger or stairs line (§5.10).
     func stopSpeech()
     /// The stream stopped (volume down / stop): cut everything now, danger and stairs lines included.
@@ -125,6 +129,14 @@ struct GeminiAssist: Equatable {
     let findItem: String?
 }
 
+/// Held-item check (owner decision): `holding` = a hand holds an item up in front of the camera; `isGoal` = it is the
+/// item asked for; `name` = what it is (1–4 words).
+struct HeldCheck: Equatable {
+    let holding: Bool
+    let isGoal: Bool
+    let name: String
+}
+
 /// Gemini item finder answer for one photo (owner decision).
 struct ItemFinding: Equatable {
     /// Visible, with confidence ≥ 0.5 and a usable box.
@@ -148,6 +160,8 @@ protocol GeminiClient {
     /// While searching (~every 2 s): is the goal item in this photo (latest Stream B frame, upright, ~1024 px)?
     /// nil = no usable answer.
     func findItem(_ description: String, image: Data) async throws -> ItemFinding?
+    /// After "Pick it up and hold it out." (owner decision): is the user holding an item up, and is it the goal?
+    func checkHeld(_ description: String, image: Data) async throws -> HeldCheck
     /// Anything the offline router couldn't handle (question, unknown item, unmatched words) + one still + context.
     func assist(_ transcript: String, context: AssistContext, still: Data) async throws -> GeminiAssist
     /// nil = no entrance visible.

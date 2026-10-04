@@ -128,10 +128,15 @@ final class UISettingsStore {
         settings = Self.load(defaults: defaults, key: key)
     }
 
+    /// Owner decision: Settings only shows the walkthrough and credits, so every other setting is back to its
+    /// default (nothing hidden can stay changed, e.g. nearby mode or danger vibrations off). Only whether the
+    /// walkthrough was heard is kept.
     private static func load(defaults: UserDefaults?, key: String) -> UISettings {
-        guard let data = defaults?.data(forKey: key),
-              let decoded = try? JSONDecoder().decode(UISettings.self, from: data) else { return UISettings() }
-        return decoded
+        var s = UISettings()
+        if let data = defaults?.data(forKey: key), let decoded = try? JSONDecoder().decode(UISettings.self, from: data) {
+            s.hasHeardWalkthrough = decoded.hasHeardWalkthrough
+        }
+        return s
     }
 
     private func save() {

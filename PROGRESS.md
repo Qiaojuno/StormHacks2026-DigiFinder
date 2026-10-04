@@ -230,3 +230,12 @@ xcodebuild -scheme DigiFinder -destination 'generic/platform=iOS Simulator' -der
   never gives up; elsewhere still ~60 s → "I couldn't find X.". "Turn slowly." replaced: every ~15 s without a
   sighting → "Stop and look around. I need context."; after ~4 s standing still (≈ two Gemini scans) → "Keep going.";
   a sighting answers it instead; still walking after 20 s → asked again. Tests: SessionContextTests.
+- Speech caption (owner decision): top centre of the camera page. "You: …" live from the recognizer's partial
+  results (`VoiceInput.onPartialTranscript`; typed requests in the Simulator too) and every line the app speaks,
+  danger alerts included (`FeedbackOutput.onLineSpoken`). Fades 5 s after the last change, stays while recording,
+  hidden from VoiceOver, Reduce Motion respected. Verified in the Simulator (shows at launch, fades after 5 s).
+- Settings page (owner decision): only "How it works" (walkthrough, rewritten for current capabilities: volume
+  down/up, clock directions, one vibration, stairs and wet floors, "stop and look around", internet for finding) and
+  Credits at the very bottom (Google Gemini added, with the photo note; YOLOv8, Open Food Facts, USDA). Speech speed,
+  voice, nearby mode, units, tones, danger vibrations, detail and the duplicate Debug button removed; on load every
+  setting except "walkthrough heard" resets to its default so nothing hidden can stay changed.

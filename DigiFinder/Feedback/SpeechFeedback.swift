@@ -245,8 +245,12 @@ final class SpeechFeedback: NSObject, FeedbackOutput, UIDebugSnapshotSource, AVS
         }
     }
 
+    /// Set once at startup (screen caption); called on the speech queue.
+    var onLineSpoken: ((String) -> Void)?
+
     private func start(_ line: SpeechLine) {
         token += 1
+        onLineSpoken?(line.text)
         switch speechChannel(for: line.priority, voiceOverRunning: voiceOverRunning) {
         case .synthesizer:
             audio.prepareForSpeech(micOpen: micOpen)

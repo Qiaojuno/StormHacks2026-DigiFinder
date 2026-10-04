@@ -39,9 +39,13 @@ final class VoiceRecognitionSession: @unchecked Sendable {
     private let levelLock = NSLock()
     private var levels: [Float] = []
 
-    init(recognizer: SFSpeechRecognizer, contextualStrings: [String]) {
+    /// The words heard so far (screen caption), on the recognition queue.
+    private let onPartial: ((String) -> Void)?
+
+    init(recognizer: SFSpeechRecognizer, contextualStrings: [String], onPartial: ((String) -> Void)? = nil) {
         self.recognizer = recognizer
         self.contextualStrings = contextualStrings
+        self.onPartial = onPartial
     }
 
     func run() async -> VoiceResult {
@@ -120,6 +124,7 @@ final class VoiceRecognitionSession: @unchecked Sendable {
         if let text, !text.isEmpty, text != bestText {
             bestText = text
             lastWordAt = Self.now()
+            onPartial?(text)
         }
         // A final result before volume down (the recognizer ended on its own, or failed) ends the recording too.
         if isFinal || failed { complete(result()) }

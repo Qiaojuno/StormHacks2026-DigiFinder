@@ -8,6 +8,7 @@ import DigiFinderCore
 /// Ends only on `finish()` (volume down): no silence end, no time limit; `cancel()` returns `.cancelled`.
 /// A second `listen` while one is running returns `.cancelled` at once (a confused press never restarts it).
 final class SpeechVoiceInput: VoiceInput, @unchecked Sendable {
+    var onPartialTranscript: ((String) -> Void)?
     private enum Stop { case finish, cancel }
 
     private let lock = NSLock()
@@ -78,7 +79,8 @@ final class SpeechVoiceInput: VoiceInput, @unchecked Sendable {
             return .empty(noisy: false)
         }
 
-        let session = VoiceRecognitionSession(recognizer: recognizer, contextualStrings: contextualStrings)
+        let session = VoiceRecognitionSession(recognizer: recognizer, contextualStrings: contextualStrings,
+                                              onPartial: onPartialTranscript)
         let pending: Stop? = lock.withLock {
             recording = session
             return stopRequest

@@ -29,6 +29,10 @@ enum SessionTuning {
     static let nearbyPrompt = 15.0
     /// After "Stop and look around…": standing still this long (≈ two Gemini scans) → "Keep going."
     static let contextStill = 4.0
+    /// Confirm (Gemini mode): "Pick it up and hold it out." again this often while nothing is held.
+    static let holdReminder = 10.0
+    /// Confirm (Gemini mode): walking this long without holding the item → back to the search, silently.
+    static let confirmWalkAway = 4.0
     /// Still not stopped this long after asking → ask again.
     static let contextReask = 20.0
     static let nearbyGiveUp = 60.0

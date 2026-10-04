@@ -53,11 +53,13 @@ final class SessionGeminiFinder {
         generation += 1
         task?.cancel()
         task = nil
-        if new?.goal != old?.goal, old != nil { perception.trackTarget(nil) }
+        if new?.goal != old?.goal || old?.step == .confirm, old != nil { perception.trackTarget(nil) }
         status.set(active: new != nil)
         guard let new else { return }
         let generation = self.generation
-        task = Task { [weak self] in await self?.run(new.goal, generation: generation) }
+        task = new.step == .confirm
+            ? Task { [weak self] in await self?.runHeldCheck(new.goal, generation: generation) }
+            : Task { [weak self] in await self?.run(new.goal, generation: generation) }
     }
 
     /// The camera flipped: drop the answer in flight (its photo was the old way up) and scan again now.
@@ -68,6 +70,38 @@ final class SessionGeminiFinder {
     }
 
     private func current(_ generation: Int) -> Bool { !Task.isCancelled && generation == self.generation }
+
+    /// Confirm (owner decision): every ~2 s, is the user holding the item up, and is it the goal? Holding → the
+    /// session hears `.confirmed` (right → done, wrong → put back and search again). Not holding → nothing.
+    private func runHeldCheck(_ goal: Goal, generation: Int) async {
+        let description = Self.describe(goal)
+        let perception = self.perception
+        let gemini = self.gemini
+        while current(generation) {
+            let began = ProcessInfo.processInfo.systemUptime
+            var interval = Self.searchInterval
+            if system.isOnline, let photo = await Self.photo(perception) {
+                guard current(generation) else { return }
+                status.sent()
+                do {
+                    let check = try await gemini.checkHeld(description, image: photo.jpeg)
+                    guard current(generation) else { return }
+                    status.held(check)
+                    if check.holding {
+                        let name = check.name.isEmpty ? goal.product : check.name
+                        onEvent?(.confirmed(ProductInfo(code: "gemini", name: name), isGoal: check.isGoal))
+                    }
+                } catch {
+                    guard current(generation) else { return }
+                    status.failed(error)
+                    interval = Self.backoffInterval
+                }
+            }
+            while current(generation), ProcessInfo.processInfo.systemUptime - began < interval {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+    }
 
     private func run(_ goal: Goal, generation: Int) async {
         let description = Self.describe(goal)
@@ -156,6 +190,11 @@ final class SessionGeminiFinderStatus: @unchecked Sendable {
         } else {
             text = "no answer"
         }
+        lock.withLock { last = text }
+    }
+
+    func held(_ c: HeldCheck) {
+        let text = c.holding ? "holding \"\(c.name)\"" + (c.isGoal ? " · RIGHT" : " · wrong") : "not holding"
         lock.withLock { last = text }
     }
 

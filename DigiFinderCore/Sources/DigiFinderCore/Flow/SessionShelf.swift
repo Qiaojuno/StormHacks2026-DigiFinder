@@ -41,8 +41,23 @@ extension ShoppingSession {
         state.progress.lastMatchAt = state.now
         let product = productName(info)
         guard isGoal else {
+            if !state.onDeviceItemSearch {
+                // Gemini mode: put it back and search again (Gemini guides to the right one).
+                enter(state.pickReturn)
+                announce(SessionPhrases.wrongItem(SessionPhrases.capWords("That's \(product), not \(name(goal)).")))
+                recalculate()
+                return
+            }
             enter(.pick)                                    // back to pointing (voice only, no haptics)
             announce(SessionPhrases.wrongItem(wrongItemLine(found: info, goal: goal)))
+            return
+        }
+        if !state.onDeviceItemSearch {
+            announce(SessionPhrases.gotIt(name(goal)))
+            out.append(.chime(.done))
+            out.append(.markDone(goal))
+            state.foundCount += 1
+            advanceToNext()
             return
         }
         // Word search has no database candidates: read the label back.
@@ -62,6 +77,25 @@ extension ShoppingSession {
         } else if since >= SessionTuning.unclearFarther, guide(SessionPhrases.holdFarther) {
             state.marks.unclearStage = 0
             state.marks.unclearAnchor = state.now
+        }
+    }
+
+    /// Confirm in Gemini mode (owner decision): never gives up. Nothing held → "Pick it up and hold it out." every
+    /// ~10 s; walking ~4 s without holding it → back to the search (the next sighting brings it back here).
+    mutating func holdTimers() {
+        let now = state.now
+        if state.isWalking {
+            let since = state.marks.confirmWalkSince ?? now
+            state.marks.confirmWalkSince = since
+            if now - since >= SessionTuning.confirmWalkAway {
+                enter(state.pickReturn)
+                recalculate()
+            }
+            return
+        }
+        state.marks.confirmWalkSince = nil
+        if now - (state.marks.holdPromptAt ?? now) >= SessionTuning.holdReminder, guide(SessionPhrases.pickUpHold) {
+            state.marks.holdPromptAt = now
         }
     }
 

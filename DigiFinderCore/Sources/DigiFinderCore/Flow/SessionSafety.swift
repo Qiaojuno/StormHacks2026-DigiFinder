@@ -302,6 +302,7 @@ extension ShoppingSession {
         case .inAisle: expireItemStop()                      // no timer moves the user to the shelf
         case .pick: notFoundTimer()
         case .confirm:
+            if !state.onDeviceItemSearch { holdTimers(); break }
             unclearTimers()
             notFoundTimer()
         case .idle: break

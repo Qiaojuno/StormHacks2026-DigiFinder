@@ -366,7 +366,8 @@ final class SessionRunner: UISessionDriving, UIDebugSnapshotSource {
         guard let finder else { return }
         let st = session.state
         let searching = st.streaming && !st.askPending && st.pause == nil
-            && [Step.entrance, .findAisle, .inAisle].contains(st.step)
+            && [Step.entrance, .findAisle, .inAisle, .confirm].contains(st.step)
+            && (st.step != .confirm || !st.onDeviceItemSearch)          // Confirm: Gemini held-item check
         finder.update(searching ? st.goal.map { SessionGeminiFinder.Search(goal: $0, step: st.step) } : nil)
     }
 

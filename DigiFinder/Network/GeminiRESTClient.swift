@@ -79,6 +79,18 @@ struct GeminiRESTClient: GeminiClient {
         return a.answer
     }
 
+    func checkHeld(_ description: String, image: Data) async throws -> HeldCheck {
+        let prompt = """
+            This photo is from a camera on a blind person's chest. They were asked to pick up \(description) and hold \
+            it out in front of the camera. holding: true only if a hand is holding an item up close in front of the \
+            camera (not items on a shelf or table). isGoal: true only if the held item is \(description); read the \
+            label when there is one. name: what the held item is, 1 to 4 words, or empty.
+            """
+        let a = try await generate(NetworkHeldAnswer.self, prompt: prompt, images: [image],
+                                   schema: NetworkHeldAnswer.schema, timeout: Self.timeout)
+        return a.check
+    }
+
     /// nil = no entrance visible. `still` must be upright.
     func pickEntrance(still: Data) async throws -> EntrancePick? {
         let prompt = """

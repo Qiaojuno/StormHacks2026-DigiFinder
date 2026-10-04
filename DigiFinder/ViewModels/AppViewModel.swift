@@ -18,6 +18,13 @@ final class AppViewModel {
     /// The stream is running (camera, danger, prompts): the record button shows stop.
     private(set) var isStreaming = false
     private(set) var status = UIStatus()
+    /// Screen caption (top centre): what the user said and the app's last spoken line. Fades ~5 s after the last
+    /// change. For judges, low-vision users and helpers; hidden from VoiceOver (everything is already spoken).
+    private(set) var captionYou = ""
+    private(set) var captionApp = ""
+    private(set) var captionVisible = false
+    @ObservationIgnored private var captionToken = 0
+    static let captionSeconds = 5.0
 
     let settings: UISettingsStore
     let debug: DebugViewModel
@@ -58,7 +65,16 @@ final class AppViewModel {
 
         status = readStatus()
         settings.onChange = { [weak runner] s in runner?.apply(settings: s) }
-        runner.onListeningChange = { [weak self] listening in self?.isRecording = listening }
+        runner.onListeningChange = { [weak self] listening in
+            self?.isRecording = listening
+            if listening { self?.caption(you: "") }                      // a new recording: fresh words
+        }
+        env.voice.onPartialTranscript = { [weak self] text in
+            Task { @MainActor in self?.caption(you: text) }
+        }
+        env.feedback.onLineSpoken = { [weak self] text in
+            Task { @MainActor in self?.caption(app: text) }
+        }
         runner.onStreamingChange = { [weak self] streaming in self?.isStreaming = streaming }
         runner.onUpdate = { [weak self] step, message, walking in
             guard let self else { return }
@@ -66,6 +82,21 @@ final class AppViewModel {
             self.lastMessage = message
             self.isWalking = walking
             self.refreshStatus()
+        }
+    }
+
+    private func caption(you: String? = nil, app: String? = nil) {
+        if let you { captionYou = you }
+        if let app { captionApp = app }
+        captionVisible = !captionYou.isEmpty || !captionApp.isEmpty
+        captionToken += 1
+        let token = captionToken
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.captionSeconds))
+            guard let self, self.captionToken == token, !self.isRecording else { return }
+            self.captionVisible = false
+            self.captionYou = ""
+            self.captionApp = ""
         }
     }
 

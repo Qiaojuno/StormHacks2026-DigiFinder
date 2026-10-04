@@ -13,6 +13,7 @@ final class TypedVoiceInput: VoiceInput, @unchecked Sendable {
 
     var onPermissionDenied: (() -> Void)?
     var permissionDenied: Bool { false }
+    var onPartialTranscript: ((String) -> Void)?
     var contextualStrings: [String] = []
 
     init() {}
@@ -61,6 +62,7 @@ final class TypedVoiceInput: VoiceInput, @unchecked Sendable {
     func submit(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
+        onPartialTranscript?(t)
         lock.lock()
         if continuation == nil {
             pendingText = t

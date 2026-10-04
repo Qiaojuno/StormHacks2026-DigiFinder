@@ -295,7 +295,10 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         let runYOLO = !yoloBusy && yoloGate.admit(t, fps: yoloFPS)
         if runYOLO { yoloBusy = true }
         let runVision = !visionBusy && visionGate.admit(t, fps: Self.visionFPS(mode, yoloFPS: yoloFPS))
-        if runVision { visionBusy = true; latestFrame = f; latestFrameAt = t }
+        if runVision { visionBusy = true }
+        // Every frame is the latest for Gemini photos, also in the hold-up step where Vision doesn't run.
+        latestFrame = f
+        latestFrameAt = t
         lock.unlock()
 
         if runYOLO {

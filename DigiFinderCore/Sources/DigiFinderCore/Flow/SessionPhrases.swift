@@ -160,6 +160,8 @@ enum SessionPhrases {
     static func grab(_ text: String) -> String { "That's \(text). Grab it." }
     static func grabWithAlternative(_ text: String, _ alternative: String) -> String { "This is \(text). \(alternative) Grab it." }
     static let holdUp = "Hold it up in front of you."
+    /// Within reach (Gemini mode, owner decision): the search ends only once the user holds the right item.
+    static let pickUpHold = "Pick it up and hold it out."
     static func thatsMove(_ text: String, _ direction: String) -> String { "That's \(text). Move \(direction)." }
     static let notItMoveRight = "Not it. Move slowly to the right."
     static let turnItSlowly = "Turn it slowly."
