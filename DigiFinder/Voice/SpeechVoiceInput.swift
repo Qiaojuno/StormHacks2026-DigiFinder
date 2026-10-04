@@ -5,9 +5,9 @@ import DigiFinderCore
 
 /// On-device `SFSpeechRecognizer` (§2 Audio and input, §5.10).
 /// listen: permissions → wait for speech to end (max ~3 s) → hold guidance → `.playAndRecord` → beep → record.
-/// Ends on `finish()` (volume down), ~1.5 s of silence or `maxSeconds`; `cancel()` returns `.cancelled`.
+/// Ends only on `finish()` (volume down): no silence end, no time limit; `cancel()` returns `.cancelled`.
 /// A second `listen` while one is running returns `.cancelled` at once (a confused press never restarts it).
-final class SpeechVoiceInput: VoiceInput, VoiceInputControl, @unchecked Sendable {
+final class SpeechVoiceInput: VoiceInput, @unchecked Sendable {
     private enum Stop { case finish, cancel }
 
     private let lock = NSLock()
@@ -53,7 +53,7 @@ final class SpeechVoiceInput: VoiceInput, VoiceInputControl, @unchecked Sendable
         return ok
     }
 
-    func listen(maxSeconds: Double) async -> VoiceResult {
+    func listen() async -> VoiceResult {
         let began: Bool = lock.withLock {
             guard !listening else { return false }
             listening = true
@@ -78,8 +78,7 @@ final class SpeechVoiceInput: VoiceInput, VoiceInputControl, @unchecked Sendable
             return .empty(noisy: false)
         }
 
-        let session = VoiceRecognitionSession(recognizer: recognizer, contextualStrings: contextualStrings,
-                                              maxSeconds: maxSeconds)
+        let session = VoiceRecognitionSession(recognizer: recognizer, contextualStrings: contextualStrings)
         let pending: Stop? = lock.withLock {
             recording = session
             return stopRequest

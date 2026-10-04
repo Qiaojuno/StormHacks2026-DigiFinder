@@ -61,14 +61,11 @@ public struct GeometryDangerRule {
         history = GeometryDistanceHistory(window: window)
     }
 
-    /// `distance`: this frame's corridor nearest (nil = nothing there). In shelf mode, distances under ~0.7 m are
-    /// ignored and only approaching objects (TTC < 1.5 s) count. Returns true while the emergency holds for the
-    /// required number of consecutive frames (the caller applies its own alert cooldown).
-    public mutating func update(t: Double, distance: Float?, rotationRate: Double, shelfMode: Bool = false) -> Bool {
-        var d = distance
-        if shelfMode, let v = d, v < Corridor.shelf.minForward { d = nil }
-        history.add(t: t, distance: d)
-        if isEmergency(history.samples, rotationRate: rotationRate, shelfMode: shelfMode) {
+    /// `distance`: this frame's corridor nearest (nil = nothing there). Returns true while the emergency holds for
+    /// the required number of consecutive frames (the caller applies its own alert cooldown).
+    public mutating func update(t: Double, distance: Float?, rotationRate: Double) -> Bool {
+        history.add(t: t, distance: distance)
+        if isEmergency(history.samples, rotationRate: rotationRate) {
             streak += 1
         } else {
             streak = 0

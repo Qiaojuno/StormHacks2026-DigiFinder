@@ -7,9 +7,15 @@ import DigiFinderCore
 final class ToneService {
     /// Setup toggle "tones". The listening beep always plays (it tells the user the mic is open).
     var isEnabled: Bool {
-        get { queue.sync { enabled } }
-        set { queue.async { self.enabled = newValue } }
+        get { enabledLock.lock(); defer { enabledLock.unlock() }; return enabledCopy }
+        set {
+            enabledLock.lock(); enabledCopy = newValue; enabledLock.unlock()
+            queue.async { self.enabled = newValue }
+        }
     }
+    /// Read from any thread without waiting on the tone queue.
+    private let enabledLock = NSLock()
+    private var enabledCopy = true
 
     private let queue = DispatchQueue(label: "feedback.tones")
     private var enabled = true

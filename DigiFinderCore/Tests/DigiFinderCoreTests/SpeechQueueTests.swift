@@ -121,3 +121,21 @@ final class SpeechQueueTests: XCTestCase {
         XCTAssertEqual(speechChannel(for: .guidance, voiceOverRunning: false), .synthesizer)
     }
 }
+
+final class SpeechQueueChainTests: XCTestCase {
+    /// A long line must not make the next line of the same event stale ("Got it…" then "Next: milk.").
+    func testSameEventLinesSurviveALongFirstLine() {
+        var q = SpeechPriorityQueue()
+        _ = q.enqueue(SpeechLine(text: "Got it: Starbucks Dark Roast, whole bean. Put it in your cart.", priority: .guidance, createdAt: 10))
+        _ = q.enqueue(SpeechLine(text: "Next: milk.", priority: .guidance, createdAt: 10))
+        XCTAssertEqual(q.finished(now: 14.5)?.text, "Next: milk.")
+    }
+
+    /// Backlog that waited behind a danger line still goes stale (§5.15).
+    func testBacklogBehindDangerStillGoesStale() {
+        var q = SpeechPriorityQueue()
+        _ = q.enqueue(SpeechLine(text: "Cart ahead, steer left", priority: .danger, createdAt: 10))
+        _ = q.enqueue(SpeechLine(text: "Walk through slowly.", priority: .guidance, createdAt: 10))
+        XCTAssertNil(q.finished(now: 14))
+    }
+}

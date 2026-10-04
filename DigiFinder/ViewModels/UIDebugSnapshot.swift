@@ -79,7 +79,7 @@ struct UIDebugSnapshot {
     }
 }
 
-/// Wave 3: the runner, `SafetyService` or `PerceptionService` adopt this to feed the debug overlay.
+/// Feeds the debug overlay: `SessionRunner` (Safety + Perception values) and `SpeechFeedback` (speech queue).
 /// Read about twice a second on the main thread; must be safe to call from any thread and cheap.
 protocol UIDebugSnapshotSource: AnyObject {
     var debugSnapshot: UIDebugSnapshot { get }

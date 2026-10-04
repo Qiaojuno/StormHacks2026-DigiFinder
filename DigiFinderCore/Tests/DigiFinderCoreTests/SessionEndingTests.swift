@@ -5,12 +5,12 @@ import XCTest
 final class SessionEndingTests: XCTestCase {
     func testItemDoneThenNext() {
         var h = SessionHarness()
-        h.send(.routed(.products([SessionFixtures.coffee, SessionFixtures.milk])))
+        h.send(.routed(.product(SessionFixtures.coffee, .unspecified)))
         h.send(.signs([SessionFixtures.coffeeSign]), .arrivedAtAisle(clock: 9), .motion(yawDegrees: -90, steps: 0, walking: true),
-               .signs([SessionFixtures.shelfSign]))
+               .signs([SessionFixtures.shelfSign]), .motion(yawDegrees: -90, steps: 2, walking: false))
         h.grab()
         let e = h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
-        XCTAssertEqual(said(e), ["Got it: Starbucks Dark Roast. Put it in your cart.", "Next: milk."])
+        XCTAssertEqual(said(e), ["Got it: Starbucks Dark Roast. Put it in your cart.", "What's next?"], "one item at a time")
         XCTAssertTrue(e.contains(.chime(.done)))
     }
 
@@ -22,7 +22,8 @@ final class SessionEndingTests: XCTestCase {
         XCTAssertEqual(said(e), ["Shopping done. You found 0 items."])
         XCTAssertTrue(e.contains(.chime(.done)))
         XCTAssertTrue(e.contains(.setTarget(nil, candidates: [], destination: nil)))
-        XCTAssertEqual(h.state.step, .sessionDone)
+        XCTAssertEqual(h.state.step, .idle)
+        XCTAssertTrue(h.state.finished)
         XCTAssertEqual(h.state.queue, [])
     }
 
@@ -32,7 +33,8 @@ final class SessionEndingTests: XCTestCase {
         h.grab()
         h.send(.confirmed(SessionFixtures.darkRoastInfo, isGoal: true))
         XCTAssertEqual(said(h.advance(13)), ["Shopping done. You found 1 item."], "no answer at all")
-        XCTAssertEqual(h.state.step, .sessionDone)
+        XCTAssertEqual(h.state.step, .idle)
+        XCTAssertTrue(h.state.finished)
         h.send(.started)
         XCTAssertEqual(h.state.foundCount, 0, "a new trip starts from zero")
     }
@@ -47,29 +49,26 @@ final class SessionEndingTests: XCTestCase {
 
     func testStopCancelsTheGoalThenNextOrWhatsNext() {
         var h = SessionHarness()
-        h.send(.routed(.products([SessionFixtures.coffee, SessionFixtures.milk])))
-        var e = h.send(.routed(.command(.stop)))
-        XCTAssertEqual(said(e), ["Stopped.", "Next: milk."])
+        h.send(.routed(.product(SessionFixtures.coffee, .unspecified)))
+        let e = h.send(.routed(.command(.stop)))
+        XCTAssertEqual(said(e), ["Stopped.", "What's next?"])
         XCTAssertTrue(e.contains(.chime(.done)))
         XCTAssertFalse(e.contains(.markDone(SessionFixtures.coffee)))
-        XCTAssertEqual(h.state.goal, SessionFixtures.milk)
-
-        e = h.send(.routed(.command(.stop)))
-        XCTAssertEqual(said(e), ["Stopped.", "What's next?"])
-        XCTAssertTrue(e.contains(.listen(maxSeconds: 5)))
+        XCTAssertFalse(e.contains(.listen))
         XCTAssertNil(h.state.goal)
     }
 
-    func testNotFoundAfterNinetySecondsInTheAisle() {
+    func testNotFoundAfterNinetySecondsAtTheShelf() {
         var h = SessionHarness()
-        h.send(.routed(.products([SessionFixtures.coffee, SessionFixtures.milk])))
+        h.send(.routed(.product(SessionFixtures.coffee, .unspecified)))
         h.send(.signs([SessionFixtures.coffeeSign]), .arrivedAtAisle(clock: 9), .motion(yawDegrees: -90, steps: 0, walking: true),
-               .signs([SessionFixtures.shelfSign]))
+               .signs([SessionFixtures.shelfSign]), .motion(yawDegrees: -90, steps: 2, walking: false))
+        XCTAssertEqual(h.state.step, .pick)
         XCTAssertFalse(said(h.advance(89)).contains(SessionPhrases.notFound))
         let e = h.advance(1)
-        XCTAssertEqual(said(e), ["I didn't find it. It may be out of stock. Say 'find staff' for help.", "Next: milk."])
+        XCTAssertEqual(said(e), ["I didn't find it. It may be out of stock. Say 'find staff' for help.", "What's next?"])
         XCTAssertTrue(e.contains(.chime(.done)))
-        XCTAssertEqual(h.state.goal, SessionFixtures.milk)
+        XCTAssertNil(h.state.goal)
     }
 
     func testMatchesRestartTheNotFoundTimer() {
@@ -77,20 +76,8 @@ final class SessionEndingTests: XCTestCase {
         h.reachShelf()
         h.advance(80)
         h.grab()
-        h.send(.confirmed(ProductInfo(code: "2", name: "Blonde Roast"), isGoal: false))   // back to pointing
+        h.send(.confirmed(ProductInfo(code: "2", name: "Blonde Roast"), isGoal: false))   // back to Pick
         XCTAssertFalse(said(h.advance(30)).contains(SessionPhrases.notFound))
-    }
-
-    func testNotFoundAfterWalkingTheAisleBothWays() {
-        var h = SessionHarness()
-        h.startGoal(SessionFixtures.coffee)
-        h.send(.signs([SessionFixtures.coffeeSign]), .arrivedAtAisle(clock: 9))
-        h.send(.motion(yawDegrees: -90, steps: 0, walking: true))       // turned into the aisle
-        h.send(.motion(yawDegrees: -90, steps: 12, walking: true))      // walked to the end
-        XCTAssertEqual(said(h.send(.motion(yawDegrees: 90, steps: 13, walking: true))), [], "turned back")
-        XCTAssertEqual(said(h.send(.motion(yawDegrees: 90, steps: 20, walking: true))), [])
-        let e = h.send(.motion(yawDegrees: 90, steps: 26, walking: true))
-        XCTAssertEqual(said(e), ["I didn't find it. It may be out of stock. Say 'find staff' for help.", "What's next?"])
     }
 
     func testLostThenGuidancePausedThenResumedByTalking() {
@@ -103,12 +90,14 @@ final class SessionEndingTests: XCTestCase {
         let e = h.advance(0.5)
         XCTAssertEqual(said(e), ["Guidance paused. Press volume up when you're ready."])
         XCTAssertTrue(e.contains(.chime(.done)))
-        XCTAssertEqual(h.state.step, .paused)
+        XCTAssertEqual(h.state.pause, .lost)
+        XCTAssertEqual(h.state.step, .findAisle, "the pause is an overlay: the phase is kept")
         XCTAssertEqual(said(h.send(.signs([AisleSign(number: "4", words: ["Tahini"], clock: 12)]))), [], "paused until volume up")
 
         h.send(.talkPressed)
         h.send(.notUnderstood(noisy: false))
-        XCTAssertEqual(h.state.step, .findingSignage)
+        XCTAssertNil(h.state.pause)
+        XCTAssertEqual(h.state.step, .findAisle)
         XCTAssertFalse(said(h.advance(29)).contains(SessionPhrases.lostTrack), "the lost timer restarts")
     }
 

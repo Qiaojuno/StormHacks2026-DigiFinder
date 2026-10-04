@@ -4,10 +4,7 @@ import DigiFinderCore
 /// Simulator / debug panel: typed requests stand in for speech. Same rules as `SpeechVoiceInput` (waits for speech
 /// to end, holds guidance, beeps) but no microphone. `submit(_:)` resolves the pending listen with the text; text
 /// submitted while not listening is kept for the next listen.
-final class TypedVoiceInput: VoiceInput, VoiceInputControl, @unchecked Sendable {
-    /// Typing is slower than talking: a listen waits at least this long.
-    static let minimumWaitSeconds = 30.0
-
+final class TypedVoiceInput: VoiceInput, @unchecked Sendable {
     private let lock = NSLock()
     private var listening = false
     private var continuation: CheckedContinuation<VoiceResult, Never>?
@@ -27,7 +24,8 @@ final class TypedVoiceInput: VoiceInput, VoiceInputControl, @unchecked Sendable 
         return listening
     }
 
-    func listen(maxSeconds: Double) async -> VoiceResult {
+    /// Waits for `submit` (or `finish` / `cancel`): no time limit, like the microphone.
+    func listen() async -> VoiceResult {
         let gen: Int? = lock.withLock {
             guard !listening else { return nil }
             listening = true
@@ -53,9 +51,6 @@ final class TypedVoiceInput: VoiceInput, VoiceInputControl, @unchecked Sendable 
             }
             continuation = c
             lock.unlock()
-            DispatchQueue.global().asyncAfter(deadline: .now() + max(maxSeconds, Self.minimumWaitSeconds)) { [weak self] in
-                self?.resolve(.empty(noisy: false), generation: gen)
-            }
         }
         lock.withLock { if generation == gen { listening = false } }
         audio.endListening()

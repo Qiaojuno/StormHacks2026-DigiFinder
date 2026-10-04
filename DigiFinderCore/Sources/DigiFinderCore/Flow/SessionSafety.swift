@@ -1,15 +1,19 @@
 // Danger cut-in, stairs, positioning prompts, motion, system events and timers (§5.3, §5.4, §5.8, §5.16).
 
 // MARK: - Danger (§5.3). The safety lane already vibrated, stopped speech and spoke the alert.
+// Alerts depend on the motion state only; nothing here (or anywhere in the session) gates them by phase or overlay.
 
 extension ShoppingSession {
     mutating func danger(cutRecording: Bool) {
         state.dangerSince = state.now
         guard cutRecording else { return }
         state.isListening = false
-        state.listenDeadline = nil
-        reply(SessionPhrases.sayAgain, prompt: false)
-        listen(SessionTuning.autoListenSeconds)
+        reply(SessionPhrases.sayAgain, prompt: false)        // the user presses volume up to answer
+    }
+
+    /// After an alert, the way straight ahead opened up: "Clear ahead, about 4 meters. Walk straight." (§5.3)
+    mutating func pathClear(meters: Float?) {
+        reply(clearPathPhrase(meters: meters, inSteps: state.distanceInSteps), prompt: false)
     }
 
     /// Path clear → recalculate the current step and speak a fresh prompt.
@@ -17,8 +21,8 @@ extension ShoppingSession {
         state.dangerSince = nil
         recalculate()
         switch state.step {
-        case .pointing: guide(SessionPhrases.pointAtShelf)
-        case .holdUpToCheck: guide(SessionPhrases.holdUp)
+        case .pick: guide(SessionPhrases.pointAtShelf)
+        case .confirm: guide(SessionPhrases.holdUp)
         default: break                                       // the next frames speak (de-dupe cleared)
         }
     }
@@ -40,7 +44,7 @@ extension ShoppingSession {
         }
         state.stairs = SessionStairsMemory(up: o.up, distance: o.distance, stepsAtObservation: state.steps,
                                            lastSeenAt: state.now, nearSaid: o.distance <= SessionTuning.stairsNearMeters)
-        sayStairs(SessionPhrases.stairs(o))
+        sayStairs(SessionPhrases.stairs(o, steps: state.distanceInSteps))
     }
 
     /// The floor near the feet isn't visible from the lanyard: count down with the pedometer.
@@ -59,13 +63,9 @@ extension ShoppingSession {
         if cut {
             out.append(.cancelListening)
             state.isListening = false
-            state.listenDeadline = nil
         }
         speak(text, .stairs, prompt: false)
-        if cut {
-            reply(SessionPhrases.sayAgain, prompt: false)
-            listen(SessionTuning.autoListenSeconds)
-        }
+        if cut { reply(SessionPhrases.sayAgain, prompt: false) }
     }
 }
 
@@ -74,16 +74,24 @@ extension ShoppingSession {
 extension ShoppingSession {
     mutating func positioning(_ hint: PositioningHint) {
         let interval: Double
+        let step = state.step
         switch hint {
-        case .phoneFlipped:                                  // not at the shelf; max once per 30 s
-            guard state.step != .idle, state.step != .sessionDone, !(state.work?.shelfMode ?? false) else { return }
+        case .phoneFlipped:                                  // walking only (Safety checks it only then); max once per 30 s
+            guard state.isWalking, step != .idle else { return }
             interval = SessionTuning.flippedInterval
+        case .tiltUp, .tiltDown:                             // never: the phone hangs on a lanyard (owner decision)
+            return
+        case .slowDown:                                      // only matters while walking, or while pointing / holding up
+            guard state.isWalking || step == .pick || step == .confirm else { return }
+            interval = SessionTuning.hintInterval
+        case .stepBack, .moveCloser:                         // reading labels at the shelf only
+            guard state.vote != nil || step == .pick || step == .confirm else { return }
+            interval = SessionTuning.hintInterval
         case .pointInFront:
-            guard state.step == .pointing else { return }
+            guard step == .pick else { return }
             interval = SessionTuning.hintInterval
         default:
-            let camera: [Step] = [.findingEntrance, .findingSignage, .walkingAisle, .shelfVote, .pointing, .holdUpToCheck, .findingDestination]
-            guard camera.contains(state.step) else { return }
+            guard step != .idle else { return }
             interval = hint == .tooDark ? SessionTuning.darkInterval : SessionTuning.hintInterval
         }
         let key = "\(hint)"
@@ -91,6 +99,7 @@ extension ShoppingSession {
         if guide(SessionPhrases.positioning(hint)) { state.speech.hintTimes[key] = state.now }
     }
 
+    /// Layer 1 → layer 2: the phases read the motion state here; they never set it.
     mutating func motion(yaw: Double, steps: Int, walking: Bool) {
         state.yaw = yaw
         state.steps = steps
@@ -99,9 +108,25 @@ extension ShoppingSession {
         stairsCountdown()
         guard !guidanceHeld else { return }
         switch state.step {
-        case .findingEntrance: entranceTurned()
-        case .walkingAisle: aisleWalked()
-        default: break
+        case .entrance:
+            pickWhenStanding()
+            if state.step == .entrance { entranceTurned() }
+        case .findAisle:
+            pickWhenStanding()
+            guard state.step == .findAisle else { return }
+            if let b = state.aisleBearing, walking,
+               abs(SessionGeometry.angle(yaw, from: b)) <= SessionTuning.aisleHeadingDegrees {
+                walkedIntoAisle()                             // heading into the remembered aisle
+            } else if state.vote != nil {
+                voteProgress()
+            }
+        case .inAisle:
+            pickWhenStanding()
+            if state.step == .inAisle { aisleEndBackup() }
+        case .pick:
+            if walking { enter(state.pickReturn) }            // moved on: back where Pick came from, silently
+        case .idle, .confirm:
+            break
         }
     }
 }
@@ -113,7 +138,7 @@ extension ShoppingSession {
         switch s {
         case .backgrounded: backgrounded()
         case .foregrounded: foregrounded()
-        case .batteryLow(let percent): notice("battery-\(percent)", SessionPhrases.battery(percent))
+        case .batteryLow: break                              // not announced (owner decision)
         case .thermal(let level): thermal(level)
         case .audioRouteChanged: speak(state.lastPrompt, .guidance, prompt: false)   // continue on the speaker
         case .cameraDenied: notice("camera", SessionPhrases.cameraOff)
@@ -129,27 +154,25 @@ extension ShoppingSession {
 
     /// Screen lock, call, Siri: "Guidance paused, camera off."
     mutating func backgrounded() {
-        guard state.step != .idle, state.step != .sessionDone, state.pauseReason != .background else { return }
+        guard state.step != .idle || state.askPending, state.pause != .background else { return }
         if state.isListening {
             out.append(.cancelListening)
             state.isListening = false
-            state.listenDeadline = nil
         }
-        if state.step == .asking {
-            state.askStartedAt = nil
-            state.step = state.resumeStep ?? .idle
+        if state.askPending {
+            state.assist = nil
+            state.askPending = false
         }
-        if state.step != .paused { state.resumeStep = state.step }
-        state.step = .paused
-        state.pauseReason = .background
+        state.pause = .background                            // overlay: the phase is kept
         state.held = []                                      // stale by the time the camera is back
         announce(SessionPhrases.pausedCameraOff)
         emitWork()
     }
 
     mutating func foregrounded() {
-        guard state.step == .paused, state.pauseReason == .background else { return }
-        resumePausedStep()
+        guard state.pause == .background else { return }
+        state.pause = nil
+        emitWork()
         announce(SessionPhrases.back)
         recalculate()
     }
@@ -157,17 +180,16 @@ extension ShoppingSession {
     mutating func thermal(_ level: ThermalLevel) {
         let old = state.thermal
         state.thermal = level
-        if level == .serious && old != .serious && old != .critical { announce(SessionPhrases.hot) }
-        if level == .critical && old != .critical { announce(SessionPhrases.tooHot) }
+        // Heat is handled silently (owner decision): rates drop, and at critical only danger and stairs run.
         if old == .critical && level != .critical { recalculate() } else { emitWork() }
     }
 
     mutating func online(_ on: Bool) {
         state.online = on
-        guard state.step == .findingEntrance else { return }
+        guard state.step == .entrance else { return }
         if !on {
             state.entrance.online = false
-        } else if !state.entrance.online, state.entrance.tries < SessionTuning.maxPicks {
+        } else if state.onlineHelp, !state.entrance.online, state.entrance.tries < SessionTuning.maxPicks {
             state.entrance.online = true
             state.entrance.waitingForTurn = false
         }
@@ -185,19 +207,19 @@ extension ShoppingSession {
 
     mutating func checkTimers() {
         let now = state.now
-        if state.isListening, let deadline = state.listenDeadline, now >= deadline {   // the runner never answered
-            state.isListening = false
-            state.listenDeadline = nil
+        // Safety net: a recording the runner never answered must not block volume up forever.
+        if state.isListening, let started = state.listenStartedAt, now - started >= SessionTuning.stuckRecording {
+            out.append(.cancelListening)
+            recordingEnded()
             afterRecording()
         }
         if let since = state.dangerSince, now - since >= SessionTuning.dangerHold {
             state.dangerSince = nil
             recalculate()
         }
-        if state.step == .asking, let at = state.askStartedAt, now - at >= SessionTuning.askTimeout {
-            state.askStartedAt = nil
-            reply(SessionPhrases.noAnswer, prompt: false)
-            resumeAfterAsking()
+        if let a = state.assist, now - a.startedAt >= SessionTuning.assistTimeout {
+            state.assist = nil                                   // no answer: the offline path, silently
+            resumeAfterAsking(then: a)
         }
         if let s = state.surroundingsSince, now - s >= SessionTuning.surroundingsTimeout { state.surroundingsSince = nil }
         if let st = state.stairs, now - st.lastSeenAt >= SessionTuning.stairsForget { state.stairs = nil }
@@ -208,25 +230,27 @@ extension ShoppingSession {
             enqueue(pending, line: SessionPhrases.willAdd(name(pending)))
             recalculate()
         }
-        if state.askingNext, state.step == .askingGoal, let at = state.askingNextAt, now - at >= SessionTuning.answerTimeout {
+        placeTimers()
+        if state.askingNext, state.step == .idle, let at = state.askingNextAt, now - at >= SessionTuning.answerTimeout {
             finishShopping()
         }
         guard !guidanceHeld else { return }
         switch state.step {
-        case .findingEntrance: entranceTimers()
-        case .findingSignage: signageTimers()
-        case .shelfVote:
-            voteTimers()
-            if state.step == .shelfVote { lostTimers() }
-        case .walkingAisle:
-            aisleTimers()
-            if state.step == .walkingAisle { notFoundTimer() }
-        case .pointing: notFoundTimer()
-        case .holdUpToCheck:
+        case .entrance:
+            entranceTimers()
+            expireItemStop()
+        case .findAisle:
+            expireItemStop()
+            if state.destination != nil { destinationTimers() }
+            else if isGeneral { nearbyTimers() }
+            else if !placeWaiting { signageTimers() }        // quiet while the grocery answer is pending
+            else if state.vote != nil { voteProgress() }
+        case .inAisle: expireItemStop()                      // no timer moves the user to the shelf
+        case .pick: notFoundTimer()
+        case .confirm:
             unclearTimers()
             notFoundTimer()
-        case .findingDestination: destinationTimers()
-        case .idle, .askingGoal, .asking, .sessionDone, .paused: break
+        case .idle: break
         }
     }
 }

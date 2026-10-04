@@ -12,11 +12,13 @@ public struct Goal: Codable, Equatable {
     public var synonyms: [String]
     /// Extra words to look for on signs (unknown items).
     public var signWords: [String]
+    /// YOLO class the item itself looks like ("Mug", "Mobile phone", "Banana"), for finding it in view; nil = text only.
+    public var visualClass: String?
 
     public init(brand: String? = nil, product: String, variant: [String] = [], form: String? = nil,
-                category: String? = nil, synonyms: [String] = [], signWords: [String] = []) {
+                category: String? = nil, synonyms: [String] = [], signWords: [String] = [], visualClass: String? = nil) {
         self.brand = brand; self.product = product; self.variant = variant; self.form = form
-        self.category = category; self.synonyms = synonyms; self.signWords = signWords
+        self.category = category; self.synonyms = synonyms; self.signWords = signWords; self.visualClass = visualClass
     }
 }
 

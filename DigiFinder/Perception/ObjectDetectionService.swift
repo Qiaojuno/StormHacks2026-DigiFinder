@@ -12,6 +12,23 @@ import DigiFinderCore
 final class ObjectDetectionService: ObjectDetector, @unchecked Sendable {
     /// Minimum class confidence kept.
     static let minConfidence: Float = 0.3
+    /// The only classes the app uses (guide-dog job). The model knows 601 Open Images classes; everything else
+    /// ("Building", "Office building", furniture, clothing…) is dropped right after detection, so danger, stairs,
+    /// doors, "What's around?" and the debug overlay never see it. Aisle clues (catalog `visualClasses`) are added
+    /// at runtime with `allowContextLabels`.
+    /// Owner decision: on-device object detection is ONLY for obstacles. Items are found by Gemini.
+    static let essentialLabels: Set<String> = [
+        // People and things that move toward the user (danger labels).
+        "Person", "Man", "Woman", "Boy", "Girl", "Cart", "Wheelchair", "Bicycle", "Dog", "Car",
+        // Stairs confirmation for the stairs check (safety).
+        "Stairs",
+    ]
+
+    /// Model names renamed at load, so speech, categories.json and aisle_map.json all use one spelling
+    /// (the OIV7 export says "Doughnut"; the app says "Donut").
+    static let renamed: [String: String] = ["Doughnut": "Donut"]
+    static func displayName(_ modelLabel: String) -> String { renamed[modelLabel] ?? modelLabel }
+
     /// OIV7 names that differ from common spellings used in categories.json / aisle_map.json.
     static let labelAliases: [String: [String]] = [
         "donut": ["doughnut"], "doughnut": ["donut"],
@@ -27,6 +44,8 @@ final class ObjectDetectionService: ObjectDetector, @unchecked Sendable {
     private let stateLock = NSLock()
     private var tracker = PerceptionObjectTracker()
     private var latestDetections: [Detection] = []
+    /// Essentials + aisle clues (guarded by `stateLock`).
+    private var allowed = ObjectDetectionService.essentialLabels
     private var latestSeconds: Double = 0
 
     init(bundle: Bundle = .main) {
@@ -36,7 +55,7 @@ final class ObjectDetectionService: ObjectDetector, @unchecked Sendable {
             let config = MLModelConfiguration()
             config.computeUnits = .all
             if let ml = try? MLModel(contentsOf: url, configuration: config), let vn = try? VNCoreMLModel(for: ml) {
-                labels = Self.classLabels(of: ml)
+                labels = Self.classLabels(of: ml).map(Self.displayName)
                 let inputs = ml.modelDescription.inputDescriptionsByName
                 if inputs["iouThreshold"] != nil || inputs["confidenceThreshold"] != nil {
                     vn.featureProvider = try? MLDictionaryFeatureProvider(dictionary: [
@@ -51,6 +70,17 @@ final class ObjectDetectionService: ObjectDetector, @unchecked Sendable {
         }
         request = req
         modelLabels = labels
+    }
+
+    /// Adds the aisle-clue classes (catalog `visualClasses`, already resolved to model names) to the allowlist.
+    /// Kept for compatibility; obstacle classes only (owner decision), so extra labels are ignored.
+    func allowContextLabels(_ labels: Set<String>) {
+        stateLock.lock(); allowed = Self.essentialLabels; stateLock.unlock()
+    }
+
+    /// Essential labels the loaded model doesn't have (logged at start; empty without the model).
+    var missingEssentialLabels: [String] {
+        modelLabels.isEmpty ? [] : Self.essentialLabels.subtracting(modelLabels).sorted()
     }
 
     /// Latest tracked detections (contract space). Empty without the model.
@@ -70,7 +100,7 @@ final class ObjectDetectionService: ObjectDetector, @unchecked Sendable {
         guard let request else { return [] }
         detectLock.lock()
         defer { detectLock.unlock() }
-        let handler = VNImageRequestHandler(cvPixelBuffer: f.pixelBuffer, orientation: .right, options: [:])
+        let handler = VNImageRequestHandler(cvPixelBuffer: f.pixelBuffer, orientation: CaptureOrientation.visionOrientation, options: [:])
         do { try handler.perform([request]) } catch { return latest }
         let raw: [Detection] = (request.results ?? []).compactMap { obs in
             guard let o = obs as? VNRecognizedObjectObservation, let top = o.labels.first,
@@ -79,11 +109,12 @@ final class ObjectDetectionService: ObjectDetector, @unchecked Sendable {
             let box = Geometry.fromVision(NormRect(x: Double(b.origin.x), y: Double(b.origin.y),
                                                    width: Double(b.width), height: Double(b.height))).clamped()
             guard box.area > 0 else { return nil }
-            return Detection(label: top.identifier, confidence: top.confidence, box: box)
+            return Detection(label: Self.displayName(top.identifier), confidence: top.confidence, box: box)
         }
         let t = f.time.isValid ? f.time.seconds : ProcessInfo.processInfo.systemUptime
         stateLock.lock()
-        let tracked = tracker.update(raw, time: t)
+        let kept = raw.filter { allowed.contains($0.label) }
+        let tracked = tracker.update(kept, time: t)
         latestDetections = tracked
         latestSeconds = t
         stateLock.unlock()

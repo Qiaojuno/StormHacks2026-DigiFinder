@@ -3,7 +3,7 @@ import DigiFinderCore
 
 /// Event buttons of the debug panel: canned `SessionEvent`s that stand in for Perception, Safety and System output.
 enum UIDebugEvent: String, CaseIterable, Identifiable {
-    case signs, aisleVerdict, arrivedAtAisle, arrivedAtDestination, pointed, confirmed
+    case signs, aisleVerdict, arrivedAtAisle, arrivedAtDestination, itemSeen, searchHint, aisleEnd, pointed, confirmed
     case danger, dangerCleared, stairs, outside, inside, onlineOn, onlineOff
 
     var id: String { rawValue }
@@ -14,6 +14,9 @@ enum UIDebugEvent: String, CaseIterable, Identifiable {
         case .aisleVerdict: return "Aisle verdict"
         case .arrivedAtAisle: return "Arrived at aisle"
         case .arrivedAtDestination: return "Arrived at place"
+        case .itemSeen: return "Item in reach"
+        case .searchHint: return "Search hint"
+        case .aisleEnd: return "Aisle end"
         case .pointed: return "Pointed"
         case .confirmed: return "Confirmed"
         case .danger: return "Danger"
@@ -33,6 +36,9 @@ enum UIDebugEvent: String, CaseIterable, Identifiable {
         case .aisleVerdict: return "Send aisle verdict: coffee"
         case .arrivedAtAisle: return "Send arrived at aisle, 9 o'clock"
         case .arrivedAtDestination: return "Send arrived at destination"
+        case .itemSeen: return "Send item seen at 12 o'clock, 1 meter"
+        case .searchHint: return "Send search hint: coffee sign at 10 o'clock"
+        case .aisleEnd: return "Send end of aisle"
         case .pointed: return "Send pointed product: Folgers Classic Roast"
         case .confirmed: return "Send confirmed product: Folgers Classic Roast, the goal"
         case .danger: return "Send danger"
@@ -53,6 +59,9 @@ enum UIDebugEvent: String, CaseIterable, Identifiable {
         case .aisleVerdict: return .aisleVerdict("coffee", evidence: ["coffee", "tea"])
         case .arrivedAtAisle: return .arrivedAtAisle(clock: 9)
         case .arrivedAtDestination: return .arrivedAtDestination
+        case .itemSeen: return .itemSeen(clock: 12, distance: 1)
+        case .searchHint: return .searchHint("Coffee sign at 10 o'clock")
+        case .aisleEnd: return .aisleEnd
         case .pointed: return .pointed(PointedProduct(text: "Folgers Classic Roast", match: 0.9))
         case .confirmed:
             return .confirmed(ProductInfo(code: "0025500002312", name: "Classic Roast Ground Coffee",

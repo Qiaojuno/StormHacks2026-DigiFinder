@@ -51,11 +51,6 @@ struct UIDebugPanelView: View {
                 }
             }
 
-            if !debug.canInject {
-                Text("The session runner doesn't accept typed requests or events yet.")
-                    .font(.footnote)
-                    .foregroundStyle(UITheme.secondary)
-            }
             if !debug.lastAction.isEmpty {
                 Text(debug.lastAction)
                     .font(.footnote)

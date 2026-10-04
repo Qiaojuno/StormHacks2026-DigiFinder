@@ -7,6 +7,8 @@ public enum Verbosity: Int, Codable, Comparable {
 
 public enum VoiceCommand: Equatable {
     case stop, thatsAll, repeatLast, lessDetail, moreDetail, whatsAround, outside(Bool), finishTalking
+    /// "It's nearby" / "in this room" (true): look around for the item, no signs or aisles. "Store mode" (false).
+    case nearby(Bool)
     /// Answers to "Switch to milk, or add it?"
     case switchGoal, addGoal
 }
@@ -14,8 +16,8 @@ public enum VoiceCommand: Equatable {
 public enum Request: Equatable {
     case command(VoiceCommand), destination(Destination)
     case product(Goal, GoalChange)
-    /// "coffee and milk" (queued)
-    case products([Goal])
+    /// "coffee and milk" (queued); "actually coffee and milk" → `.replace`, "also coffee and milk" → `.add`.
+    case products([Goal], GoalChange)
     /// Not in the offline database (§5.2).
     case unknownProduct(String, GoalChange)
     case question(String)

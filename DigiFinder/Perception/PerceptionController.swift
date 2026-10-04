@@ -24,7 +24,7 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
 
     private let synonyms: MatchingSynonyms
     private let wordToAisle: [String: String]
-    /// Model label → aisle (catalog `visualClasses` resolved to the model's spelling, e.g. Donut → Doughnut).
+    /// Model label → aisle (catalog `visualClasses` resolved to the model's spelling; "Doughnut" is renamed "Donut" at load).
     private let classToAisle: [String: String]
 
     private let yoloQueue = DispatchQueue(label: "DigiFinder.Perception.yolo", qos: .userInitiated)
@@ -51,6 +51,10 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
     private var debug = PerceptionDebugSnapshot()
     private var yoloMeter = PerceptionRateMeter()
     private var visionMeter = PerceptionRateMeter()
+    /// Gemini item finder: a box to start tracking (nil = stop) for the target generation it belongs to, and
+    /// whether a box is being tracked (or waits for the next frame).
+    private var pendingTrack: (box: NormRect?, generation: Int)?
+    private var trackingOn = false
 
     // MARK: YOLO-queue state
     private var outside = PerceptionOutsideDetector()
@@ -68,6 +72,9 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
     private var arrival = PerceptionArrivalTracker()
     private var positioning = PositioningAdvisor()
     private var lastSignsKey = ""
+    /// Last "item seen" sent (vision queue).
+    private var lastItem: PerceptionItemFinder.Sighting?
+    private var lastItemEmit = -Double.infinity
     private var lastSignsEmit = -Double.infinity
     private var signsShown = false
     private var signsLastSeen = -Double.infinity
@@ -84,6 +91,9 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
     private var hintRegion: NormRect?
     private var hint: ProductInfo?
     private var lastHintAt = -Double.infinity
+    private var lastShelfDistanceAt = -Double.infinity
+    /// Gemini item finder box, followed frame to frame.
+    private let targetTracker = PerceptionTargetTracker()
 
     // MARK: Still-queue state
     private let labelChecker: PerceptionLabelChecker
@@ -121,6 +131,11 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
             if !unknown.isEmpty { print("[Perception] visualClasses not in the model: \(unknown.sorted())") }
         }
         classToAisle = AisleVote.classToAisle(resolved)
+        // Aisle clues + household objects (found by their camera class in nearby searches).
+        service?.allowContextLabels(Set(resolved.values.flatMap(\.visualClasses)).union(MatchingHousehold.allClasses))
+        if let missing = service?.missingEssentialLabels, !missing.isEmpty {
+            print("[Perception] essential labels not in the model: \(missing)")
+        }
         debug.modelLoaded = service?.isModelLoaded ?? false
         debug.unknownVisualClasses = unknown.sorted()
     }
@@ -142,7 +157,7 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
             self?.storeLatest(f)
         }
 
-        let stream = (frames as? CaptureControl)?.makeStreamB() ?? frames.streamB
+        let stream = frames.makeStreamB()
         streamTask = Task.detached(priority: .userInitiated) { [weak self] in
             for await frame in stream {
                 guard let self else { return }
@@ -164,13 +179,44 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         }
         let generation = holdUpGeneration
         lock.unlock()
-        if startHoldUp { runHoldUpLoop(generation) }
+        // Hold-up label check (full-res stills → text + barcode → confirm): off (owner decision).
+        // if startHoldUp { runHoldUpLoop(generation) }
+        _ = (startHoldUp, generation)
     }
 
     func setTarget(_ g: Goal?, candidates: [ProductInfo], destination: Destination?) {
         lock.lock()
         target = PerceptionTarget(goal: g, candidates: candidates, destination: destination, generation: target.generation + 1)
         lock.unlock()
+    }
+
+    // MARK: - Gemini item finder
+
+    func latestUprightJPEG(maxWidth: Int) -> (jpeg: Data, frameTime: Double)? {
+        activeLock.lock(); let on = active; activeLock.unlock()
+        guard on else { return nil }
+        lock.lock()
+        let frame = now() - latestFrameAt <= 1 ? latestFrame : nil
+        let time = latestFrameAt
+        lock.unlock()
+        guard let frame else { return nil }
+        return autoreleasepool {
+            guard let upright = CaptureImageRenderer.upright(frame.pixelBuffer, maxWidth: CGFloat(maxWidth)),
+                  let jpeg = NetworkJPEG.encode(upright, maxDimension: 4096, quality: 0.6) else { return nil }
+            return (jpeg, time)
+        }
+    }
+
+    func trackTarget(_ box: NormRect?) {
+        lock.lock()
+        pendingTrack = (box, target.generation)
+        trackingOn = box != nil
+        lock.unlock()
+    }
+
+    var isTrackingTarget: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return trackingOn
     }
 
     func describeSurroundings() -> String {
@@ -186,7 +232,7 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         if signs.isEmpty, let frame, let geometry {
             // Signs aren't being read right now: one quick text pass on the latest frame.
             describeLock.lock()
-            let handler = VNImageRequestHandler(cvPixelBuffer: frame.pixelBuffer, orientation: .right, options: [:])
+            let handler = VNImageRequestHandler(cvPixelBuffer: frame.pixelBuffer, orientation: CaptureOrientation.visionOrientation, options: [:])
             if (try? handler.perform([describeText.request])) != nil {
                 signs = signage.analyze(describeText.results(), goal: goal, geometry: geometry).signs
             }
@@ -196,7 +242,7 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         return PerceptionSurroundings.describe(signs: signs, detections: detector.latest, geometry: geometry, depthAt: depthAt)
     }
 
-    // MARK: - Extra API (see CONTRACT_CHANGES.md)
+    // MARK: - Memory and debug
 
     /// Saves the last confirmed label crop to product memory (the runner calls this for `Effect.remember`).
     func remember(_ p: ProductInfo) {
@@ -227,7 +273,18 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         lock.unlock()
     }
 
+    /// The stream (owner decision): when off, frames are dropped and nothing is reported.
+    private let activeLock = NSLock()
+    private var active = true
+
+    func setActive(_ on: Bool) {
+        activeLock.lock(); active = on; activeLock.unlock()
+        if !on { trackTarget(nil) }                      // no stale box when the stream comes back
+    }
+
     private func offer(_ f: FrameB) {
+        activeLock.lock(); let on = active; activeLock.unlock()
+        guard on else { return }
         let t = now()
         lock.lock()
         let mode = PerceptionMode(work)
@@ -274,7 +331,9 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
     private func runYOLO(_ f: FrameB) {
         let detections = detector.detect(f)
         let t = now()
-        let change = outside.update(detections, time: t)
+        // OWNER DECISION: outside detection off (YOLO is only for obstacles).
+        // let change = outside.update(detections, time: t)
+        let change: Bool? = nil
         lock.lock()
         yoloMeter.tick(t)
         debug.detections = detections
@@ -293,30 +352,41 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         let target = self.target
         let depthFrame = t - latestDepthAt <= 0.5 ? latestDepth : nil
         visionMeter.tick(t)
+        let trackSeed = pendingTrack
+        pendingTrack = nil
         lock.unlock()
 
         if target.generation != seenGeneration { resetForTarget(); seenGeneration = target.generation }
         if mode != seenMode { resetForMode(from: seenMode, to: mode); seenMode = mode }
+        if let seed = trackSeed {
+            if let box = seed.box, seed.generation == target.generation { targetTracker.seed(box) }
+            if !targetTracker.isTracking || seed.box == nil || seed.generation != target.generation { stopTracking() }
+        }
+        if (mode != .signs || target.goal == nil) && targetTracker.isTracking { stopTracking() }
         guard mode != .holdUp else { return }
 
         let geometry = PerceptionFrameGeometry(f)
         let detections = detector.latest
         let doorInView = detections.contains { $0.label == "Door" }
 
-        let doText: Bool
-        switch mode {
-        case .signs: doText = true
-        case .pointing: doText = t - lastPointText >= 0.2
-        case .idle: doText = doorInView && t - lastDoorText >= 0.5
-        case .holdUp: doText = false
-        }
-        var requests: [VNRequest] = []
-        if doText { textFast.setRegion(nil); requests.append(textFast.request) }
-        if mode == .pointing { requests.append(hands.request) }
+        // OWNER DECISION: on-device item search is commented out; items are found only by Gemini (+ the tracker below).
+        // Text reading (signs, door text, labels) and hand pose (pointing) are off.
+        // let doText: Bool
+        // switch mode {
+        // case .signs: doText = true
+        // case .pointing: doText = t - lastPointText >= 0.2
+        // case .idle: doText = doorInView && t - lastDoorText >= 0.5
+        // case .holdUp: doText = false
+        // }
+        let doText = false
+        _ = doorInView
+        let requests: [VNRequest] = []
+        // if doText { textFast.setRegion(nil); requests.append(textFast.request) }
+        // if mode == .pointing { requests.append(hands.request) }
         var lines: [PerceptionTextRegion] = []
         var hand: PerceptionHandPoint?
         if !requests.isEmpty {
-            let handler = VNImageRequestHandler(cvPixelBuffer: f.pixelBuffer, orientation: .right, options: [:])
+            let handler = VNImageRequestHandler(cvPixelBuffer: f.pixelBuffer, orientation: CaptureOrientation.visionOrientation, options: [:])
             if (try? handler.perform(requests)) != nil {
                 if doText { lines = textFast.results() }
                 if mode == .pointing { hand = hands.result() }
@@ -330,55 +400,90 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         var signs: [PerceptionSign] = []
         var pointedRegion: PerceptionProductRegion?
         var targetRegion: PerceptionProductRegion?
+        var itemBox: NormRect?
         var doors: [PerceptionDoorFinder.Door] = []
 
         switch mode {
         case .signs:
-            let result = signage.analyze(lines, goal: target.goal, geometry: geometry)
-            signs = result.signs
-            handleSigns(signs, geometry: geometry, target: target, depthAt: depthAt, heading: heading, steps: steps, time: t)
-            if target.goal != nil { updateVote(labels: result.labels, detections: detections) }
-            doors = doorFinder.doors(detections: detections, text: lines, geometry: geometry, depthAt: depthAt)
-            emitDoors(doors, time: t)
+            // Sign reading, aisle signs and sign memory: off (owner decision).
+            // let result = signage.analyze(lines, goal: target.goal, geometry: geometry)
+            // signs = result.signs
+            // handleSigns(signs, geometry: geometry, target: target, depthAt: depthAt, heading: heading, steps: steps, time: t)
+            // Look for the item itself (every search starts by looking; nearby mode only looks), and follow the
+            // Gemini item finder's box. Whichever sees it reports; both are the same `.itemSeen`.
+            // Owner decision: items are found only by Gemini (tracked here); on-device detection is for obstacles.
+            var sighting: PerceptionItemFinder.Sighting?
+            switch targetTracker.update(f.pixelBuffer) {
+            case .tracked(let box, _)?:
+                if sighting == nil {
+                    let c = box.center
+                    sighting = PerceptionItemFinder.Sighting(box: box, clock: geometry.clock(c.x), distance: depthAt(c))
+                }
+            case .lost?:
+                stopTracking()
+            case nil:
+                break
+            }
+            if let s = sighting {
+                emitItem(s, time: t)
+                itemBox = s.box
+            }
+            // Aisle vote (shelf labels + YOLO classes) and door finding: off (owner decision).
+            // if target.goal != nil { updateVote(labels: result.labels, detections: detections) }
+            // doors = doorFinder.doors(detections: detections, text: lines, geometry: geometry, depthAt: depthAt)
+            // emitDoors(doors, time: t)
+            _ = detections
         case .idle:
-            doors = doorFinder.doors(detections: detections, text: lines, geometry: geometry, depthAt: depthAt)
-            emitDoors(doors, time: t)
+            // Door finding: off (owner decision).
+            // doors = doorFinder.doors(detections: detections, text: lines, geometry: geometry, depthAt: depthAt)
+            // emitDoors(doors, time: t)
+            break
         case .pointing:
-            if doText {
-                pointLines = lines
-                pointRegions = ProductRegions.regions(from: lines)
-                lastPointText = t
-            }
-            if let hand {
-                let r = pointingAnalyzer.analyze(spot: hand.spot, regions: pointRegions, goal: target.goal,
-                                                 candidates: target.candidates, wordSearch: target.isWordSearch(catalog.aisles),
-                                                 hint: memoryHint(f, spot: hand.spot, time: t))
-                pointedRegion = r.pointedRegion
-                targetRegion = r.target
-                emitPointed(r.pointed, time: t)
-            }
+            // Pointing (hand pose + label under the fingertip + product memory): off (owner decision).
+            // if doText {
+            //     pointLines = lines
+            //     pointRegions = ProductRegions.regions(from: lines)
+            //     lastPointText = t
+            // }
+            // if let hand {
+            //     let r = pointingAnalyzer.analyze(spot: hand.spot, regions: pointRegions, goal: target.goal,
+            //                                      candidates: target.candidates, wordSearch: target.isWordSearch(catalog.aisles),
+            //                                      hint: memoryHint(f, spot: hand.spot, time: t))
+            //     pointedRegion = r.pointedRegion
+            //     targetRegion = r.target
+            //     emitPointed(r.pointed, time: t)
+            // }
+            break
         case .holdUp:
             break
         }
 
-        if mode != .pointing, target.goal != nil || target.destination != nil {
-            let kind: PerceptionArrivalTracker.Kind = target.destination != nil ? .destination : .aisle
-            if let clock = arrival.update(kind: kind, heading: heading, steps: steps, time: t) {
-                if kind == .destination {
-                    emit(.arrivedAtDestination)
-                } else {
-                    emit(.arrivedAtAisle(clock: clock))
-                    vote.reset(); lastVerdict = nil
-                }
-            }
-        }
+        // Arrival at an aisle / destination by dead reckoning from signs: off (owner decision).
+        // if mode != .pointing, target.goal != nil || target.destination != nil {
+        //     let kind: PerceptionArrivalTracker.Kind = target.destination != nil ? .destination : .aisle
+        //     if let clock = arrival.update(kind: kind, heading: heading, steps: steps, time: t) {
+        //         if kind == .destination {
+        //             emit(.arrivedAtDestination)
+        //         } else {
+        //             emit(.arrivedAtAisle(clock: clock))
+        //             vote.reset(); lastVerdict = nil
+        //         }
+        //     }
+        // }
+        _ = (heading, steps)
 
         let luma = PerceptionImageTools.meanLuma(f.pixelBuffer)
+        let shelfDistance = mode == .pointing ? depthAt(NormPoint(x: 0.5, y: 0.5)) : nil
         let input = PositioningAdvisor.Input(
             mode: mode, time: t, luma: luma, gravity: motion.gravity, rotationRate: motion.rotationRate,
             handVisible: hand != nil, lines: mode == .pointing ? pointLines : lines, pointedRegion: pointedRegion,
-            shelfDistance: mode == .pointing ? depthAt(NormPoint(x: 0.5, y: 0.5)) : nil)
+            shelfDistance: shelfDistance)
         if let hint = positioning.advise(input) { emit(.positioning(hint)) }
+        // "The shelf is about one step ahead." (LiDAR only; at most every ~2 s while pointing).
+        if let d = shelfDistance, d.isFinite, d > 0, t - lastShelfDistanceAt >= 2 {
+            lastShelfDistanceAt = t
+            emit(.shelfDistance(d))
+        }
 
         lock.lock()
         debug.visionFPS = visionMeter.fps
@@ -391,12 +496,35 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
         debug.handTip = hand?.tip
         debug.pointedSpot = hand?.spot
         debug.pointedRegion = pointedRegion?.box
-        debug.targetRegion = targetRegion?.box
+        debug.targetRegion = targetRegion?.box ?? itemBox
+        debug.trackedBox = targetTracker.box
+        debug.trackConfidence = targetTracker.confidence
         if mode != .pointing { debug.doors = doors.map(\.observation) }
         lock.unlock()
     }
 
+    /// "Item seen" on a new direction, a distance change, or every ~1 s while it stays in view.
+    private func emitItem(_ s: PerceptionItemFinder.Sighting, time t: Double) {
+        let moved = s.clock != lastItem?.clock
+            || abs((s.distance ?? -1) - (lastItem?.distance ?? -1)) > 0.3
+        guard moved || t - lastItemEmit >= 1 else { return }
+        lastItem = s
+        lastItemEmit = t
+        emit(.itemSeen(clock: s.clock, distance: s.distance))
+    }
+
+    /// Tracking ended on the vision queue (lost, target or mode change): the runner's finder asks Gemini again.
+    private func stopTracking() {
+        targetTracker.stop()
+        lock.lock()
+        if pendingTrack == nil { trackingOn = false }    // a newer box from the finder wins
+        debug.trackedBox = nil
+        lock.unlock()
+    }
+
     private func resetForTarget() {
+        if targetTracker.isTracking { stopTracking() }
+        lastItem = nil; lastItemEmit = -.infinity
         vote.reset(); lastVerdict = nil
         arrival.reset()
         lastSignsKey = ""; lastPointed = nil; lastPointedEmit = -.infinity
@@ -419,7 +547,11 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
             let key = signs.map { "\($0.key)@\($0.sign.clock)" }.joined(separator: "|")
             if (key != lastSignsKey && t - lastSignsEmit >= 0.25) || t - lastSignsEmit >= 3 {
                 lastSignsKey = key; lastSignsEmit = t; signsShown = true
-                emit(.signs(signs.map(\.sign)))
+                emit(.signs(signs.map { s in
+                    var sign = s.sign
+                    sign.distance = signDistance(s, geometry: geometry, depthAt: depthAt)
+                    return sign
+                }))
             }
         } else if signsShown && t - signsLastSeen >= 1.5 {
             signsShown = false; lastSignsKey = ""; lastSignsEmit = t
@@ -439,11 +571,16 @@ final class PerceptionController: PerceptionService, @unchecked Sendable {
             matching = []
         }
         guard let best = matching.min(by: { abs($0.degreesRight) < abs($1.degreesRight) }) else { return }
-        var distance = depthAt(best.box.center).map(Double.init)
-        if distance == nil, let d = geometry.distance(boxHeight: best.lineHeight, objectHeight: 0.12) {
-            distance = min(max(Double(d), 1.5), 30)
-        }
+        let distance = signDistance(best, geometry: geometry, depthAt: depthAt).map(Double.init)
         arrival.sighted(key: best.key, bearing: best.degreesRight, distance: distance ?? 8, heading: heading, steps: steps, time: t)
+    }
+
+    /// LiDAR at the sign's center, else estimated from the letter size (~0.12 m tall), clamped to 1.5–30 m.
+    private func signDistance(_ s: PerceptionSign, geometry: PerceptionFrameGeometry,
+                              depthAt: (NormPoint) -> Float?) -> Float? {
+        if let d = depthAt(s.box.center) { return d }
+        guard let d = geometry.distance(boxHeight: s.lineHeight, objectHeight: 0.12) else { return nil }
+        return min(max(Float(d), 1.5), 30)
     }
 
     private func updateVote(labels: [PerceptionTextRegion], detections: [Detection]) {

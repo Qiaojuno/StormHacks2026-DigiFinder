@@ -10,7 +10,7 @@ import DigiFinderCore
 /// - While the mic is open (voice input), lines below stairs are held and replayed when it closes (if still fresh),
 ///   so the app never records its own speech.
 /// Every method is callable from any thread; speech state lives on one serial queue.
-final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+final class SpeechFeedback: NSObject, FeedbackOutput, UIDebugSnapshotSource, AVSpeechSynthesizerDelegate, @unchecked Sendable {
     private let haptics: HapticsService
     private let tones: ToneService
     private let synthesizer = AVSpeechSynthesizer()
@@ -20,13 +20,17 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
     // Confined to `queue`.
     private var lines = SpeechPriorityQueue()
     private var held: [SpeechLine] = []
-    private var pendingChimes: [Tone] = []
+    /// Done chimes waiting for a line: each plays when that line finishes (or when nothing more is playing).
+    private var pendingChimes: [(tone: Tone, after: String?)] = []
+    /// The most recent line given to `say` (queue), so a chime can follow exactly that line.
+    private var lastSubmittedText: String?
     private var micOpen = false
     private var utterance: AVSpeechUtterance?
     private var announcement: String?
     private var announcementRetried = false
     private var token = 0
     private var voice: AVSpeechSynthesisVoice?
+    private var voiceID: String?
     private var rate: Float = AVSpeechUtteranceDefaultSpeechRate
 
     // Read from any thread.
@@ -67,10 +71,12 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
         return b || synthesizer.isSpeaking
     }
 
-    /// Safety lane, any thread: vibrations FIRST (no hop), then stop speech, then the alert line at danger priority.
-    func danger(_ label: String, steer: Steer) {
-        haptics.dangerPulse()
-        let line = SpeechLine(text: alertPhrase(label: label, steer: steer), priority: .danger, createdAt: Self.now())
+    /// Safety lane, any thread: vibrations FIRST (no hop) for a high threat, then stop speech, then the alert line
+    /// at danger priority. Low threats (overhead) are spoken only.
+    func danger(_ label: String, steer: Steer, distance: Float?, vibrate: Bool) {
+        if vibrate { haptics.dangerPulse() }
+        let line = SpeechLine(text: alertPhrase(label: label, steer: steer, distance: distance, inSteps: distanceInSteps),
+                              priority: .danger, createdAt: Self.now())
         markSubmit()
         queue.async {
             if self.lines.clear(below: .stairs) { self.stopCurrentOutput() }
@@ -86,12 +92,23 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
         let line = SpeechLine(text: trimmed, priority: p, createdAt: Self.now())
         markSubmit()
         queue.async {
+            self.lastSubmittedText = line.text
             self.submit(line)
             self.unmarkSubmit()
         }
     }
 
     /// Talk / stop: stops and clears everything below stairs. Never cuts a danger or stairs line (§5.10).
+    func stopAll() {
+        queue.async {
+            self.lines.stopAll()
+            self.stopCurrentOutput()
+            self.held.removeAll()
+            self.pendingChimes.removeAll()
+            self.updateBusy()
+        }
+    }
+
     func stopSpeech() {
         queue.async {
             if self.lines.holdForListening() { self.stopCurrentOutput() }
@@ -101,31 +118,56 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
         }
     }
 
-    /// The done chime waits for the line in progress ("Got it… Put it in your cart." + chime); beeps and ticks play now.
+    /// The done chime follows the line said just before it ("Got it… Put it in your cart." + chime → "Next: milk."),
+    /// even when more lines are queued behind; beeps and ticks play now.
     func chime(_ t: Tone) {
         queue.async {
             if t == .done && self.lines.current != nil {
-                self.pendingChimes.append(t)
+                self.pendingChimes.append((t, self.lastSubmittedText))
             } else {
                 self.tones.play(t)
             }
         }
     }
 
-    // MARK: FeedbackControl
+    /// The danger vibration only; speech is left alone. Any thread.
+    func dangerPulse() { haptics.dangerPulse() }
 
-    func dangerVibrationOnly() { haptics.dangerPulse() }
+    // MARK: Setup (§5.13)
+
+    // Settings are read from the main thread: cached copies behind `flags`, never `queue.sync` (the speech queue can
+    // be busy with slow audio-session work, which used to freeze the UI).
+    private var cachedVerbosity: Verbosity = .normal
+    private var cachedRate: Float = AVSpeechUtteranceDefaultSpeechRate
+    private var cachedVoiceID: String?
+    private var cachedQueueLines: [String] = []
 
     var verbosity: Verbosity {
-        get { queue.sync { lines.verbosity } }
-        set { queue.async { self.lines.verbosity = newValue } }
+        get { flags.lock(); defer { flags.unlock() }; return cachedVerbosity }
+        set {
+            flags.lock(); cachedVerbosity = newValue; flags.unlock()
+            queue.async { self.lines.verbosity = newValue }
+        }
     }
 
     var speechRate: Float {
-        get { queue.sync { rate } }
+        get { flags.lock(); defer { flags.unlock() }; return cachedRate }
         set {
             let r = min(max(newValue, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
+            flags.lock(); cachedRate = r; flags.unlock()
             queue.async { self.rate = r }
+        }
+    }
+
+    var voiceIdentifier: String? {
+        get { flags.lock(); defer { flags.unlock() }; return cachedVoiceID }
+        set {
+            let v = newValue.flatMap(AVSpeechSynthesisVoice.init(identifier:)) ?? FeedbackVoicePicker.bestEnglishVoice()
+            flags.lock(); cachedVoiceID = newValue; flags.unlock()
+            queue.async {
+                self.voiceID = newValue
+                self.voice = v
+            }
         }
     }
 
@@ -134,9 +176,26 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
         set { tones.isEnabled = newValue }
     }
 
+    /// Distances in alerts as steps; read from the safety lane, so behind a lock.
+    private let unitsLock = NSLock()
+    private var stepsUnits = false
+    var distanceInSteps: Bool {
+        get { unitsLock.lock(); defer { unitsLock.unlock() }; return stepsUnits }
+        set { unitsLock.lock(); stepsUnits = newValue; unitsLock.unlock() }
+    }
+
     var dangerHapticsEnabled: Bool {
         get { haptics.isEnabled }
         set { haptics.isEnabled = newValue }
+    }
+
+    // MARK: Debug overlay
+
+    /// Current and waiting lines, highest priority first.
+    var debugSnapshot: UIDebugSnapshot {
+        var s = UIDebugSnapshot()
+        flags.lock(); s.speechQueue = cachedQueueLines; flags.unlock()
+        return s
     }
 
     // MARK: Voice input coordination (FeedbackAudioSession)
@@ -225,6 +284,12 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
     private func lineFinished() {
         utterance = nil
         announcement = nil
+        let finishedText = lines.current?.text
+        let due = pendingChimes.filter { $0.after == nil || $0.after == finishedText }
+        if !due.isEmpty {
+            due.forEach { tones.play($0.tone) }
+            pendingChimes.removeAll { $0.after == nil || $0.after == finishedText }
+        }
         if let next = lines.finished(now: Self.now()) {
             if micOpen && next.priority < .stairs {
                 held.append(next)
@@ -234,8 +299,8 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
                 start(next)
             }
         }
-        if lines.current == nil && !pendingChimes.isEmpty {
-            pendingChimes.forEach(tones.play)
+        if lines.current == nil && !pendingChimes.isEmpty {     // its line was dropped or replaced
+            pendingChimes.forEach { tones.play($0.tone) }
             pendingChimes.removeAll()
         }
         if lines.current == nil && !micOpen { audioSettled() }
@@ -270,7 +335,8 @@ final class SpeechFeedback: NSObject, FeedbackOutput, FeedbackControl, AVSpeechS
 
     private func updateBusy() {
         let b = lines.current != nil || utterance != nil || announcement != nil
-        flags.lock(); busy = b; flags.unlock()
+        let shown = ([lines.current].compactMap { $0 } + lines.pendingLines).map { "[\($0.priority)] \($0.text)" }
+        flags.lock(); busy = b; cachedQueueLines = shown; flags.unlock()
     }
 
     private func markSubmit() { flags.lock(); pendingSubmits += 1; flags.unlock() }

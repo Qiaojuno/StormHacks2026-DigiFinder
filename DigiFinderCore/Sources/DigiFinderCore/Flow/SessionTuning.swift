@@ -2,28 +2,49 @@
 
 enum SessionTuning {
     // Listening (§5.10)
-    static let talkSeconds = 10.0
-    static let autoListenSeconds = 5.0
-    /// Speech before the beep plus routing time; a recording with no answer after this is treated as over.
-    static let listenSlack = 8.0
     /// No answer to "Switch to milk, or add it?" / "What's next?" (runner silence fallback).
     static let answerTimeout = 12.0
+
+    /// A recording still "on" after this long is stuck (recordings end on silence within seconds): cleared.
+    static let stuckRecording = 30.0
 
     // Clock
     /// Longest gap one tick may add (backgrounded time doesn't run the timers out).
     static let maxTickGap = 5.0
 
     // Replies
-    static let askTimeout = 6.0
+    /// Gemini assist: the still plus Gemini's ~6 s timeout; then the offline path.
+    static let assistTimeout = 8.0
     static let lookupTimeout = 8.0
     static let surroundingsTimeout = 6.0
     /// Guidance stays quiet this long after a danger alert if no `.dangerCleared` arrives.
     static let dangerHold = 8.0
 
+    // Item in view (global rule in every search phase)
+    /// A sighting stays usable this long (the walking "Stop." waits for Standing within it).
+    static let itemMemory = 5.0
+    /// Within this distance (m) and at 11–1 o'clock the item is in reach: Pick (Standing) or "Stop." (Walking).
+    static let reachMeters: Float = 1.2
+    /// Not a store: "Turn slowly." repeat, and give up after this long with no sighting.
+    static let nearbyPrompt = 15.0
+    static let nearbyGiveUp = 60.0
+    /// Farther item directions: when the direction changes, else at most this often.
+    static let itemInterval = 3.0
+    /// Gemini search hints ("Coffee sign at 10 o'clock."): at most this often, and only when the text changed.
+    static let searchHintInterval = 8.0
+    /// No hint while the item itself was seen this recently (on-device or tracked).
+    static let searchHintAfterSighting = 3.0
+
+    // Grocery or not (Gemini, once at app open)
+    /// No answer this long after asking → store flow. Covers the runner's good-photo wait (≤ 5 s), 3 stills ~0.7 s
+    /// apart and Gemini's ~6 s timeout.
+    static let placeTimeout = 14.0
+    /// Below this confidence the answer counts as unsure: ask once more, then the store flow.
+    static let placeMinConfidence = 0.7
+
     // Signage (§5.2, §5.7, §5.12)
     static let scanPrompt = 3.0
     static let outOfView = 10.0
-    static let voteFace = 4.0
     static let lostTrack = 30.0
     static let lostPause = 60.0
     static let directionInterval = 2.0
@@ -32,13 +53,20 @@ enum SessionTuning {
     static let signOverride = 10.0
 
     // Aisle and shelf
-    static let turnFallback = 6.0
-    static let turnDoneDegrees = 30.0
-    static let shelfCue = 4.0
+    /// After "Stop. Aisle 6 is at 9 o'clock.": walking within this many degrees of the aisle's bearing enters it.
+    static let aisleHeadingDegrees = 45.0
+    /// Pick / Confirm with no match this long since entering the aisle → not found (§5.12).
     static let notFound = 90.0
-    static let turnBackDegrees = 150.0
+    /// LiDAR aisle end counts only after this many steps in the aisle.
     static let minAisleSteps = 5
-    static let pointMatch = 0.8
+    /// Pedometer backup for the aisle end: this far (m) since entering the aisle.
+    static let aisleEndBackupMeters: Float = 20
+    /// Shelf vote: a side counts as checked after facing it this long, or this long ×2 after the prompt.
+    static let voteFace = 4.0
+    /// Facing a vote side = within this many degrees of it.
+    static let voteFacingDegrees = 45.0
+    /// Pointing match that means the goal ("Grab it.").
+    static let pointMatch = MatchingThresholds.pointMatch
     static let nearMiss = 0.5
     static let pointCueInterval = 1.0
     static let pointRepeat = 4.0

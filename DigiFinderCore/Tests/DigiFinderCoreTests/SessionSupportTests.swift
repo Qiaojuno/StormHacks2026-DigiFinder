@@ -25,8 +25,8 @@ enum SessionFixtures {
     static let darkRoastInfo = ProductInfo(code: "0762111206230", name: "Dark Roast", brand: "Starbucks", aisle: "coffee")
 
     static let signageWork = StreamWork(text: .fast, yoloFPS: 10)
-    static let pointingWork = StreamWork(text: .fast, hands: true, yoloFPS: 10, shelfMode: true)
-    static let holdUpWork = StreamWork(text: .accurate, barcodes: true, yoloFPS: 10, shelfMode: true)
+    static let pointingWork = StreamWork(text: .fast, hands: true, yoloFPS: 10)
+    static let holdUpWork = StreamWork(text: .accurate, barcodes: true, yoloFPS: 10)
 }
 
 /// Drives a session with an absolute tick clock (0.5 s ticks).
@@ -34,11 +34,24 @@ struct SessionHarness {
     var session: ShoppingSession
     private(set) var clock: Double = 1000
 
-    init(online: Bool = false, started: Bool = true) {
+    /// `grocery`: the answer to the app-open grocery check (true = store flow, the default; nil = no answer).
+    /// `onDevice`: the store flow with on-device item search (off in the app; these tests keep it covered).
+    init(online: Bool = false, started: Bool = true, grocery: Bool? = true, onDevice: Bool = true) {
         session = ShoppingSession(catalog: SessionFixtures.catalog)
+        session.setOnDeviceItemSearch(onDevice)
         _ = session.handle(.tick(clock))
         if online { _ = session.handle(.system(.online(true))) }
-        if started { _ = session.handle(.started) }
+        if started {
+            _ = session.handle(.started)
+            // The app opens stopped: the first volume up starts the stream and the grocery check; an empty
+            // recording ends it so tests begin with the stream running and nothing recording.
+            _ = session.handle(.talkPressed)
+            _ = session.handle(.notUnderstood(noisy: false))
+            if let g = grocery {
+                _ = session.handle(.placeClassified(PlaceAnswer(grocery: g, confidence: 0.9,
+                                                                scene: g ? "supermarket aisle" : "home kitchen")))
+            }
+        }
     }
 
     var state: SessionState { session.state }
@@ -59,19 +72,28 @@ struct SessionHarness {
         return effects
     }
 
+    /// Names the goal (FindAisle at once: no look-first pass).
     @discardableResult
-    mutating func startGoal(_ g: Goal) -> [Effect] { send(.routed(.product(g, .unspecified))) }
+    mutating func startGoal(_ g: Goal) -> [Effect] {
+        send(.routed(.product(g, .unspecified)))
+    }
 
-    /// From the opening question to "Point at the shelf…" via sign → arrival → turn → shelf sign.
-    mutating func reachShelf(_ g: Goal = SessionFixtures.coffee) {
+    /// Sign → "Stop. Aisle 6 is at 9 o'clock." → walking toward it (InAisle).
+    mutating func enterAisle(_ g: Goal = SessionFixtures.coffee) {
         startGoal(g)
         send(.signs([SessionFixtures.coffeeSign]))
         send(.arrivedAtAisle(clock: 9))
         send(.motion(yawDegrees: -90, steps: 0, walking: true))
-        send(.signs([SessionFixtures.shelfSign]))
     }
 
-    /// From the shelf to the hold-up check.
+    /// … → shelf sign while walking ("Stop here…") → Standing → Pick ("Point at the shelf…").
+    mutating func reachShelf(_ g: Goal = SessionFixtures.coffee) {
+        enterAisle(g)
+        send(.signs([SessionFixtures.shelfSign]))
+        send(.motion(yawDegrees: -90, steps: 2, walking: false))
+    }
+
+    /// From Pick to Confirm.
     mutating func grab(_ text: String = "Starbucks Dark Roast") {
         send(.pointed(PointedProduct(text: text, match: 0.95)))
     }

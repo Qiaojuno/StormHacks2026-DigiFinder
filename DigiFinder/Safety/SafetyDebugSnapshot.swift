@@ -29,6 +29,8 @@ struct SafetyDebugSnapshot: Equatable {
     var steer: Steer = .unknown
     /// The 2-frame emergency rule holds this frame.
     var emergency = false
+    /// Why the nearest obstacle is or isn't a threat (tuning).
+    var threatReason = ""
     /// YOLO label of the nearest obstacle ("Obstacle" without a matching box).
     var label: String?
     /// The YOLO box that gave the label (Stream B, upright portrait, normalized).
@@ -45,8 +47,12 @@ struct SafetyDebugSnapshot: Equatable {
     var lastAlertLatencyMs: Double?
     /// Safety work per depth frame, milliseconds.
     var processingMs: Double?
-    var shelfMode = false
+    /// Motion state the threat rules used (the only thing that changes them).
+    var walking = false
     var rotationRate: Double = 0
+    /// Aisle-end check: shelves on the left / right, and between shelves.
+    var aisleSides: AisleSides?
+    var betweenShelves = false
 
     // Stairs (§5.4).
     /// Learned floor height (leveled y, meters, negative).
@@ -72,7 +78,10 @@ struct SafetyDebugSnapshot: Equatable {
         if let lastAlert { alert += " · last \"\(lastAlert)\"" }
         if let ms = lastAlertLatencyMs { alert += String(format: " %.0f ms", ms) }
         out.append(alert)
-        var state = "shelf mode \(shelfMode ? "on" : "off") · rot \(String(format: "%.1f", rotationRate)) rad/s"
+        var state = "\(walking ? "walking" : "standing") · rot \(String(format: "%.1f", rotationRate)) rad/s"
+        if let s = aisleSides {
+            state += " · shelves \(s.left ? "L" : "-")\(s.right ? "R" : "-")" + (betweenShelves ? " (aisle)" : "")
+        }
         if let ms = processingMs { state += String(format: " · %.1f ms/frame", ms) }
         out.append(state)
         var stairsLine = "floor \(m(floorY)) · stairs "

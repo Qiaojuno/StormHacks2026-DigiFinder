@@ -1,15 +1,39 @@
 // Session state (§3.3). Owned by Flow/ and free to grow; the runner relies on `step`, `lastLine` and `isWalking`.
 // Times are session seconds (`now`), advanced only by `.tick`.
+//
+// Two independent layers: the motion state (`isWalking`, only from `.motion`) and the task phase (`step`).
+// Overlays keep the phase: `askPending` (Ask answer awaited) and `pause` (screen lock / lost track).
 
-/// Why guidance is paused (`Step.paused`).
+/// Why guidance is paused (overlay, the phase is kept).
 public enum SessionPauseReason: Equatable { case lost, background }
+
+/// Grocery store (signs, aisles) or anywhere else (`general`: home, office, campus, library, outdoors…): look around
+/// for the item itself.
+public enum SessionPlace: Equatable { case store, general }
+
+/// Why the phase waits for Standing before Pick.
+enum SessionPickReason: Equatable {
+    /// The item was seen within reach while walking ("Stop. Coffee at 12 o'clock.").
+    case item
+    /// The shelf sign or the vote found the item's section ("Stop here. Turn to the shelf…").
+    case shelf
+}
 
 public struct SessionState: Equatable {
     // Runner-facing
+    /// Task phase (layer 2).
     public var step: Step = .idle
     /// Lines spoken by the latest event, joined (shown on screen).
     public var lastLine = ""
+    /// Motion state (layer 1), only from `.motion(walking:)`.
     public var isWalking = false
+
+    // Overlays (the phase is kept)
+    /// An Ask answer is pending: speech prompts pause; motion and danger keep running.
+    public var askPending = false
+    public var pause: SessionPauseReason?
+    /// "Shopping done" was said (the next goal starts a fresh count).
+    public var finished = false
 
     // Goals
     public var goal: Goal?
@@ -26,14 +50,41 @@ public struct SessionState: Equatable {
     public var verbosity: Verbosity = .normal
     public var thermal: ThermalLevel = .nominal
     public var outside = false
+    /// Setup: distances in steps instead of meters.
+    public var distanceInSteps = false
+    /// Gemini's answer (or the entrance: store); nil = not known (store flow).
+    public var place: SessionPlace?
+    /// Manual setting ("it's nearby" / Settings nearby mode → general, "store mode" → store): wins over `place`.
+    public var placeOverride: SessionPlace?
+    /// Last grocery-check answer (debug overlay): confidence, scene, how many times asked.
+    public var placeConfidence: Double?
+    public var placeScene = ""
+    public var placeTries = 0
+    /// The opening question waits for the place line ("You're in a grocery store.").
+    var openingPending = false
+    /// Last time the goal item was seen in view, and where (clock, meters).
+    public var itemSeenAt: Double?
+    public var itemClock: Int?
+    public var itemDistance: Float?
+    /// Gemini is configured (Secrets.plist); without it Ask and the entrance pick stay offline.
+    public var onlineHelp = true
 
     // Talking
     public var isListening = false
+    /// The stream is running (on at app open). Off after volume down / stop: nothing is checked, asked or spoken.
+    public var streaming = true
+    /// The place line, waiting for the request recorded with the first volume up to be handled.
+    public var pendingPlaceLine: String?
+    /// "Loading." was said for the current goal while the grocery check ran.
+    public var loadingGoal = false
+    /// OWNER DECISION: on-device item search (signs, aisle vote, pointing, label check) is commented out in the app;
+    /// items are found only by Gemini. Off: every search is the Gemini-guided one (no sign prompts, vote or aisle end)
+    /// and it ends when the item is within reach ahead. On restores the store flow (kept for when it comes back).
+    public var onDeviceItemSearch = false
+    /// When the current recording started (stuck-recording safety net).
+    public var listenStartedAt: Double?
     /// Last flow prompt (for "repeat" and audio route changes).
     public var lastPrompt = ""
-    /// Step to resume after `.asking` or `.paused`.
-    public var resumeStep: Step?
-    public var pauseReason: SessionPauseReason?
 
     // Clock and motion
     public var now: Double = 0
@@ -44,13 +95,23 @@ public struct SessionState: Equatable {
     // Internal memory
     var lastTick: Double?
     var hasMotion = false
-    var listenDeadline: Double?
     /// Aisle (category key) the user stands in, for "Tea is in this aisle too."
     var currentAisle: String?
     /// Bumped whenever the target changes; held observations for an older target are dropped.
     var goalEpoch = 0
     var held: [SessionHeldEvent] = []
-    var askStartedAt: Double?
+    /// Gemini handling something unusual the user said (`askPending` overlay).
+    var assist: SessionAssist?
+    /// The grocery check (`Effect.classifyPlace`) in progress.
+    var placeCheck: SessionPlaceCheck?
+    var placeDecidedAt: Double?
+    /// Waiting for Standing before Pick, and the phase Pick returns to when the user walks on.
+    var pendingPick: SessionPickReason?
+    var pickReturn: Step = .inAisle
+    /// After "Stop. Aisle 6 is at 9 o'clock.": the aisle's absolute bearing; walking toward it enters InAisle.
+    var aisleBearing: Double?
+    /// Shelf vote, a sub-state of FindAisle.
+    var vote: SessionVote?
     var lookup: SessionLookup?
     var surroundingsSince: Double?
     var choiceAskedAt: Double?
@@ -72,6 +133,15 @@ struct SessionHeldEvent: Equatable {
     var epoch: Int
     /// Dropped on replay if the target changed meanwhile.
     var goalBound: Bool
+}
+
+/// What was sent to Gemini, for the offline fallback.
+struct SessionAssist: Equatable {
+    var text: String
+    var kind: AssistKind
+    var change: GoalChange
+    var noisy: Bool
+    var startedAt: Double
 }
 
 /// Unknown item being looked up online (§5.2).
@@ -104,6 +174,10 @@ struct SessionGoalProgress: Equatable {
     var entrySteps: Int?
     var turnBackSteps: Int?
     var lastDestinationSignAt: Double?
+    var aisleEndSaid = false
+    /// Last Gemini search hint spoken for this goal, and when (de-dupe + rate limit).
+    var lastSearchHint: String?
+    var lastSearchHintAt: Double?
 
     init(evidenceAt: Double = 0) { self.evidenceAt = evidenceAt }
 }
@@ -116,18 +190,34 @@ struct SessionStepMarks: Equatable {
     var lastDirectionAt: Double?
     var lastOtherSignsAt: Double?
     var unsureSaid = false
-    var voteStage = 0
-    var turnBearing: Double?
-    var turnDueAt: Double?
-    var shelfCueAt: Double?
     var unclearStage = 0
     var unclearAnchor: Double = 0
     var lastPointCueAt: Double?
     var destinationSeen = false
     var destinationNotFoundSaid = false
     var noisyRetry = false
+    var shelfDistanceSaid = false
 
     init(anchor: Double = 0) { scanAnchor = anchor; unclearAnchor = anchor }
+}
+
+/// The grocery check: asked at app open, asked once more when the confidence is low.
+struct SessionPlaceCheck: Equatable {
+    var askedAt: Double
+    var tries: Int
+}
+
+/// Shelf vote (§5.7) inside FindAisle: "Take two steps back." → Standing → face 9 o'clock → face 3 o'clock.
+struct SessionVote: Equatable {
+    enum Stage: Equatable { case stepBack, left, right }
+    var stage: Stage = .stepBack
+    var since: Double
+    var baseYaw: Double
+    var stepsAtPrompt: Int
+    /// Walked (or stepped) since "Take two steps back."
+    var moved = false
+    /// Facing the side being checked since.
+    var facingSince: Double?
 }
 
 /// Finding the entrance (§5.2, P1): Gemini pick online, door signs offline.

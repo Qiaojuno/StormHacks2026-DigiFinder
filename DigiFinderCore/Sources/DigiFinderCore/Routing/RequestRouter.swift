@@ -8,14 +8,6 @@
 //    A failed search is retried with catalog synonyms ("pb" → "peanut butter").
 // 4. Anything left with real words → unknown item. Nothing left (only filler) → not understood (nil).
 
-/// The routed request plus the goal change the words implied. `Request.products` has no change slot, so callers
-/// that need "actually coffee and milk" (replace both) read `change` here (see CONTRACT_CHANGES.md).
-public struct RoutingResult: Equatable {
-    public var request: Request?
-    public var change: GoalChange
-    public init(request: Request?, change: GoalChange = .unspecified) { self.request = request; self.change = change }
-}
-
 public struct RequestRouter {
     /// Injected database search (app side); [] = no match.
     let productSearch: (String) -> [Goal]
@@ -78,35 +70,32 @@ public struct RequestRouter {
         "switch", "change", "make", "meant", "mean", "rather", "nope", "alright"]
 
     /// nil = not understood (empty or filler only).
-    public func route(_ raw: String) -> Request? { routeWithChange(raw).request }
-
-    /// Same as `route`, plus the goal change implied by the words (also for multi-product requests).
-    public func routeWithChange(_ raw: String) -> RoutingResult {
+    public func route(_ raw: String) -> Request? {
         let t = normalizeText(raw)
-        guard !t.isEmpty else { return RoutingResult(request: nil) }
-        if let cmd = VoiceCommandParser.parse(t) { return RoutingResult(request: .command(cmd)) }   // "repeat", "switch", "add it"
-        if let d = destination(t) { return RoutingResult(request: .destination(d)) }
+        guard !t.isEmpty else { return nil }
+        if let cmd = VoiceCommandParser.parse(t) { return .command(cmd) }                    // "repeat", "switch", "add it"
+        if let d = destination(t) { return .destination(d) }
         let core = Self.dropLeadingFiller(t)
         var change = goalChange(core)
         let wantsToFind = change != .unspecified || startsWith(core, "no") || Self.findPhrases.contains { has(core, $0) }
         if !wantsToFind && Self.questionStarts.contains(where: { startsWith(core, $0) }) {
-            return RoutingResult(request: .question(raw))                                         // "is this peanut butter crunchy?"
+            return .question(raw)                                                              // "is this peanut butter crunchy?"
         }
         let whole = productQuery(core)
-        guard !whole.isEmpty, whole != "no" else { return RoutingResult(request: nil) }          // "okay", "um"
-        if let hit = search(whole) {                                                              // whole phrase first: "mac and cheese"
-            if hit.droppedNo { change = .replace }                                                // "no, milk" = change of mind
-            return RoutingResult(request: .product(hit.goal, change), change: change)
+        guard !whole.isEmpty, whole != "no" else { return nil }                               // "okay", "um"
+        if let hit = search(whole) {                                                           // whole phrase first: "mac and cheese"
+            if hit.droppedNo { change = .replace }                                             // "no, milk" = change of mind
+            return .product(hit.goal, change)
         }
         let parts = Self.splitList(core).map(productQuery).filter { !$0.isEmpty && $0 != "no" }
         if parts.count > 1 {
             let hits = parts.compactMap { search($0) }
             if hits.count == parts.count {
                 if hits.first?.droppedNo == true { change = .replace }
-                return RoutingResult(request: .products(hits.map(\.goal)), change: change)
+                return .products(hits.map(\.goal), change)
             }
         }
-        return RoutingResult(request: .unknownProduct(whole, change), change: change)              // "toothpaste", "bathroom"
+        return .unknownProduct(whole, change)                                                  // "toothpaste", "bathroom"
     }
 
     /// Goal change implied by the words: "actually X" / "X instead" / "switch to X" → replace;

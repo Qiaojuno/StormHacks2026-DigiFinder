@@ -9,9 +9,11 @@ import DigiFinderCore
 /// Without depth frames (no LiDAR) a timer on the safety queue runs the YOLO box-growth fallback.
 ///
 /// `onEvent` is called on the safety lane (capture or safety queue): hop to the main actor in the handler.
-/// Events: `.danger(cutRecording:)`, `.dangerCleared`, `.stairs(_)` (first sighting, then the ~1 m update),
-/// `.positioning(.phoneFlipped)`.
-final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Sendable {
+/// Events: `.danger(cutRecording:)`, `.dangerCleared`, `.pathClear`, `.stairs(_)` (first sighting, then the ~1 m
+/// update), `.positioning(.phoneFlipped)`, `.aisleEnd`.
+///
+/// Alerts follow the motion state only (`motion.isWalking`); `StreamWork` (the task phase) never changes them.
+final class SafetyController: SafetyService, @unchecked Sendable {
     /// No depth frame for this long → the fallback path takes over (seconds).
     static let depthTimeout: Double = 1
     static let fallbackInterval: Double = 0.1
@@ -29,7 +31,6 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
     private let detector: ObjectDetector
     private let feedback: FeedbackOutput
     private let voice: VoiceInput
-    private let calibration: CaptureCalibration?
 
     /// Guards `handler`, `work`, `snapshot`, `started` (never held while calling out).
     private let config = NSLock()
@@ -44,7 +45,12 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
     private let stairs = StairsDetector()
     private let boxes = SafetyTracker()
     private var policy = SafetyAlertPolicy()
+    /// Waiting for the path to open after an alert (lane only).
+    private var clearWatch: (since: Double?, until: Double)?
+    /// The active alert vibrated (the 2 s repeat pulse only follows a vibrating alert).
+    private var alertVibrated = true
     private var flip = SafetyFlipCheck()
+    private var aisleEnd = AisleEndTracker()
     private var lastDepthUptime = -Double.infinity
     private var lastDebugLabelTime = -Double.infinity
     private var debugLabel = SafetyLabeler.Result(label: SafetyLabeler.fallbackLabel, box: nil, points: [])
@@ -53,8 +59,16 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
     private let queue = DispatchQueue(label: "DigiFinder.safety", qos: .userInteractive)
     private var timer: DispatchSourceTimer?
 
+    /// An obstacle this close to a known up-staircase's distance (m) is its risers, not danger.
+    static let stairsDangerMargin: Float = 1.0
+    /// After an alert: the way straight ahead must be open this far (m) for `clearHold` s to say "Clear ahead".
+    static let clearPathMeters: Float = 2.5
+    static let clearPathHold: Double = 0.5
+    /// Stop waiting for a clear path this long after the alert (s).
+    static let clearPathWatch: Double = 20
+
     private enum Action {
-        case danger(label: String, steer: Steer)
+        case danger(label: String, steer: Steer, distance: Float?, vibrate: Bool)
         case pulse
         case event(SessionEvent)
     }
@@ -63,7 +77,6 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
          feedback: FeedbackOutput, voice: VoiceInput) {
         self.frames = frames; self.depth = depth; self.motion = motion
         self.detector = detector; self.feedback = feedback; self.voice = voice
-        calibration = SafetyStreamBLens.calibration(of: frames)
     }
 
     deinit { timer?.cancel() }
@@ -98,58 +111,90 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
         config.withLock { work = w }
     }
 
-    // MARK: SafetyDebugSource
+    // MARK: Debug overlay
 
     var debugSnapshot: SafetyDebugSnapshot { config.withLock { snapshot } }
 
     // MARK: LiDAR path (capture queue)
 
+    /// The stream (owner decision): when off, no danger or stairs checks run at all.
+    private let activeLock = NSLock()
+    private var active = true
+    private var isActive: Bool { activeLock.lock(); defer { activeLock.unlock() }; return active }
+
+    func setActive(_ on: Bool) {
+        activeLock.lock(); active = on; activeLock.unlock()
+        if !on { lane.withLock { policy.reset(); danger.reset(); clearWatch = nil } }
+    }
+
     private func handle(_ f: DepthFrame) {
+        guard isActive else { return }
         let begin = DispatchTime.now().uptimeNanoseconds
-        let shelfMode = config.withLock { work.shelfMode }
         let gravity = motion.gravity
         let rotation = motion.rotationRate
         let walking = motion.isWalking
         let steps = motion.steps
         let t = f.time.isValid && f.time.seconds.isFinite ? f.time.seconds : ProcessInfo.processInfo.systemUptime
 
-        var snap = SafetyDebugSnapshot(source: .lidar, time: t, shelfMode: shelfMode, rotationRate: rotation)
-        let actions: [Action] = lane.withLock {
+        var snap = SafetyDebugSnapshot(source: .lidar, time: t, walking: walking, rotationRate: rotation)
+        // Phase 1, danger only: it's the only part with a latency budget, so its haptics fire before stairs and
+        // the flipped check run (§0: depth frame → haptic in < 50 ms).
+        var pts: [Vec3] = []
+        let dangerActions: [Action] = lane.withLock {
             lastDepthUptime = ProcessInfo.processInfo.systemUptime
             var out: [Action] = []
-            let pts = depth.points(f, gravity: gravity)
+            pts = depth.points(f, gravity: gravity)
             let basis = CameraGeometry.levelBasis(gravity: gravity)
 
-            // Danger first: it's the only part with a latency budget.
-            let r = danger.evaluate(pts, t: t, rotationRate: rotation, walking: walking, shelfMode: shelfMode)
-            if let o = r.obstacle, r.emergency || t - lastDebugLabelTime >= Self.debugLabelInterval || t < lastDebugLabelTime {
-                lastDebugLabelTime = t
-                debugLabel = SafetyLabeler.label(points: o.points, basis: basis,
-                                                 lens: SafetyStreamBLens.make(calibration: calibration, depth: f.depth),
-                                                 detections: detector.latest)
+            // The label feeds the threat level (a person or cart counts sooner than an unknown shape).
+            let lens = SafetyStreamBLens.make(streamB: frames.streamBCalibration, depth: f.depth)
+            let latest = detector.latest
+            var r = danger.evaluate(pts, t: t, rotationRate: rotation, walking: walking,
+                                    floorY: stairs.floorY) { o in
+                if t - self.lastDebugLabelTime >= Self.debugLabelInterval || t < self.lastDebugLabelTime {
+                    self.lastDebugLabelTime = t
+                    self.debugLabel = SafetyLabeler.label(points: o.points, basis: basis, lens: lens, detections: latest)
+                }
+                return self.debugLabel.label == SafetyLabeler.fallbackLabel ? nil : self.debugLabel.label
+            }
+            // Stairs never vibrate (§5.4): risers of a known up-staircase, or a "Stairs" label, aren't danger.
+            if r.emergency, let o = r.obstacle {
+                let isStairsLabel = debugLabel.label.lowercased() == "stairs"
+                let onKnownStairs = stairs.latest.map { $0.up && abs($0.distance - o.distance) < Self.stairsDangerMargin } ?? false
+                if isStairsLabel || onKnownStairs { r.emergency = false }
             }
             if r.emergency, let o = r.obstacle, policy.wantsAlert(label: debugLabel.label, x: o.x, t: t) {
                 policy.didAlert(label: debugLabel.label, x: o.x, t: t)
-                out.append(.danger(label: debugLabel.label, steer: r.steer))
+                // Only a high threat (something moving toward the user) vibrates; overhead obstacles are spoken only.
+                let vibrate = r.threat == .approaching
+                alertVibrated = vibrate
+                // Short line, no distance (owner decision): "Person ahead, steer to 1 o'clock".
+                out.append(.danger(label: debugLabel.label, steer: r.steer, distance: nil, vibrate: vibrate))
                 snap.lastAlert = alertPhrase(label: debugLabel.label, steer: r.steer)
+                clearWatch = (since: nil, until: t + Self.clearPathWatch)
+            } else if var w = clearWatch {
+                // After an alert: once the way straight ahead stays open, say so ("Clear ahead, walk straight").
+                let open = !r.emergency && (r.obstacle.map { $0.distance >= Self.clearPathMeters } ?? true)
+                if t > w.until {
+                    clearWatch = nil
+                } else if open {
+                    let since = w.since ?? t
+                    w.since = since
+                    clearWatch = w
+                    if t - since >= Self.clearPathHold {
+                        out.append(.event(.pathClear(meters: r.obstacle?.distance)))
+                        clearWatch = nil
+                    }
+                } else {
+                    w.since = nil
+                    clearWatch = w
+                }
             }
             switch policy.update(t: t, emergency: r.emergency, distance: r.obstacle?.distance, closing: r.closingSpeed) {
-            case .pulse: out.append(.pulse)
+            case .pulse: if alertVibrated { out.append(.pulse) }
             case .cleared: out.append(.event(.dangerCleared))
             case .none: break
             }
-
-            // Stairs (spoken by the session; never vibrates).
-            if let s = stairs.process(pts, t: t, steps: steps, rotationRate: rotation, detections: detector.latest) {
-                out.append(.event(.stairs(s)))
-                snap.lastStairsAnnounced = s
-            }
-
-            // Phone flipped (not in shelf mode).
-            if flip.update(f.depth, t: t, shelfMode: shelfMode) {
-                out.append(.event(.positioning(.phoneFlipped)))
-            }
-
             snap.corridorDistance = r.obstacle?.distance
             snap.corridorPoints = r.obstacle?.corridorCount ?? 0
             snap.obstacleX = r.obstacle?.x
@@ -157,18 +202,44 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
             snap.timeToContact = r.timeToContact
             snap.steer = r.steer
             snap.emergency = r.emergency
+            snap.threatReason = r.reason
             if r.obstacle != nil {
                 snap.label = debugLabel.label
                 snap.labelBox = debugLabel.box
                 snap.obstaclePoints = debugLabel.points
             }
             snap.alertActive = policy.isActive
+            return out
+        }
+        let latency = perform(dangerActions, frameTime: t)
+
+        // Phase 2: stairs and the flipped check, after the haptics.
+        let actions: [Action] = lane.withLock {
+            var out: [Action] = []
+            // Stairs (spoken by the session; never vibrates).
+            // Only while walking: sitting at a table or standing still, edges and tables aren't stairs (§5.4).
+            if walking, let s = stairs.process(pts, t: t, steps: steps, rotationRate: rotation, detections: detector.latest) {
+                out.append(.event(.stairs(s)))
+                snap.lastStairsAnnounced = s
+            }
+
+            // Phone flipped (walking only).
+            if walking, flip.update(f.depth, t: t) {
+                out.append(.event(.positioning(.phoneFlipped)))
+            }
+
+            // End of an aisle: the shelves stop on both sides (the session decides whether it matters).
+            let sides = aisleSides(pts)
+            if aisleEnd.update(t: t, sides: sides, walking: walking) { out.append(.event(.aisleEnd)) }
+            snap.aisleSides = sides
+            snap.betweenShelves = aisleEnd.betweenShelves
+
             snap.floorY = stairs.floorY
             snap.stairs = stairs.latest
             snap.stairsProfile = stairs.profile
             return out
         }
-        let latency = perform(actions, frameTime: t)
+        _ = perform(actions, frameTime: nil)
         snap.processingMs = Double(DispatchTime.now().uptimeNanoseconds - begin) / 1_000_000
         store(snap, alertLatency: latency)
     }
@@ -176,10 +247,10 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
     // MARK: Fallback path (safety queue, no depth frames)
 
     private func fallbackTick() {
+        guard isActive else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        let shelfMode = config.withLock { work.shelfMode }
         let rotation = motion.rotationRate
-        var snap = SafetyDebugSnapshot(source: .fallback, time: now, shelfMode: shelfMode, rotationRate: rotation)
+        var snap = SafetyDebugSnapshot(source: .fallback, time: now, walking: motion.isWalking, rotationRate: rotation)
         let actions: [Action]? = lane.withLock {
             guard now - lastDepthUptime > Self.depthTimeout else { return nil }
             var out: [Action] = []
@@ -196,12 +267,15 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
                 distance = (depth as? EstimatedDepthProvider)?.distance(for: d)
                 closing = distance.map { $0 / Float(th.ttc) } ?? (th.ttc < 3 ? 1 : 0)
             }
-            if emergency, let th = threat {
+            // No depth to tell overhead from grounded: only things that move on their own (people, carts) alert.
+            let mover = threat.map { ThreatInput(distance: 1, x: 0, closing: nil, walking: false, grounded: true,
+                                                 label: $0.label).isMover } ?? false
+            if emergency, mover, let th = threat {
                 let label = SafetyLabeler.spokenName(th.label)
                 let x = Float(th.box.midX - 0.5)
                 if policy.wantsAlert(label: label, x: x, t: now) {
                     policy.didAlert(label: label, x: x, t: now)
-                    out.append(.danger(label: label, steer: .unknown))
+                    out.append(.danger(label: label, steer: .unknown, distance: nil, vibrate: true))
                     snap.lastAlert = alertPhrase(label: label, steer: .unknown)
                 }
             }
@@ -234,14 +308,14 @@ final class SafetyController: SafetyService, SafetyDebugSource, @unchecked Senda
         var latency: Double?
         for a in actions {
             switch a {
-            case let .danger(label, steer):
+            case let .danger(label, steer, distance, vibrate):
                 let cut = voice.isListening
-                feedback.danger(label, steer: steer)
+                feedback.danger(label, steer: steer, distance: distance, vibrate: vibrate)
                 if let ft = frameTime { latency = (CMClockGetTime(CMClockGetHostTimeClock()).seconds - ft) * 1000 }
                 voice.cancel()
                 emit(.danger(cutRecording: cut))
             case .pulse:
-                (feedback as? SafetyPulseOutput)?.dangerPulse()
+                feedback.dangerPulse()
             case let .event(e):
                 emit(e)
             }

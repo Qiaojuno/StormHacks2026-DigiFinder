@@ -4,8 +4,9 @@ import DigiFinderCore
 /// Inside vs outside (§5.2): default inside. Outside when YOLO sees outdoor classes and no Shelf for ~3 s;
 /// back inside once shelves are seen for ~1 s. Reports changes only.
 struct PerceptionOutsideDetector {
-    static let outdoorLabels: Set<String> = ["Car", "Building", "Tree", "Street light", "Land vehicle", "Skyscraper",
-                                             "House", "Traffic light", "Van", "Truck", "Bus", "Taxi", "Parking meter"]
+    /// Outdoor cues, all within `ObjectDetectionService.essentialLabels`.
+    /// Empty (owner decision: object detection is only for obstacles). "I'm outside" by voice still works.
+    static let outdoorLabels: Set<String> = []
     static let indoorLabels: Set<String> = ["Shelf"]
     var outsideAfter = 3.0
     var insideAfter = 1.0

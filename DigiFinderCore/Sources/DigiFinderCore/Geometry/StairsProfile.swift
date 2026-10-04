@@ -29,8 +29,8 @@ public func detectStairs(_ pts: [Vec3], floorY: Float) -> StairsObservation? {
 /// Floor profile ahead (|x| < 0.4, below the waist band, z 0.3–5 m), median height per bin relative to the floor,
 /// grouped into flat plateaus (floor, treads). Bins straddling a riser are dropped.
 /// Up: ≥ 2 consecutive rises of 0.13–0.22 m, ~0.22–0.35 m apart; count = visible rise ÷ 0.18 ("more" if the top
-/// isn't visible). Down: a floor edge beyond which the profile is ≥ 0.13 m lower, or missing with nothing
-/// blocking the view (steps only when lower steps are visible).
+/// isn't visible). Down: a sharp floor edge onto a visible surface ≥ 0.13 m lower (steps only when lower steps
+/// are visible).
 public func detectStairs(_ pts: [Vec3], floorY: Float, params p: GeometryStairsParams) -> StairsObservation? {
     guard floorY.isFinite, p.binSize > 0 else { return nil }
     var bins = [Int: [Float]]()
@@ -51,9 +51,9 @@ public func detectStairs(_ pts: [Vec3], floorY: Float, params p: GeometryStairsP
     let floor = plateaus[0]
     let floorEnd = Float(floor.endK + 1) * p.binSize
 
-    guard plateaus.count > 1 else {
-        return stairsDropOff(pts, floor: floor, floorEnd: floorEnd, floorY: floorY, p)
-    }
+    // Missing points beyond the floor are not stairs: shiny store floors and the grazing angle from a chest lanyard
+    // often return nothing past ~2 m. A drop needs a visible lower surface (below).
+    guard plateaus.count > 1 else { return nil }
     let next = plateaus[1]
     if next.h - floor.h >= p.riseMin {
         // Up: consecutive valid rises from the floor.
@@ -83,7 +83,9 @@ public func detectStairs(_ pts: [Vec3], floorY: Float, params p: GeometryStairsP
         let steps = max(Int((top / p.stepHeight).rounded()), rises)
         return StairsObservation(up: true, distance: floorEnd, steps: steps, more: more)
     }
-    if next.h - floor.h <= -p.riseMin {
+    // Down: a sharp edge (the lower surface starts right after the floor, not a gradual slope from a leaning phone),
+    // a floor run of at least ~0.5 m before it, and a lower surface seen in at least 3 bins.
+    if next.h - floor.h <= -p.riseMin, next.startK - floor.endK <= 3, floor.bins >= 5, next.bins >= 3 {
         let lowest = plateaus.dropFirst().map(\.h).min() ?? next.h
         let drop = floor.h - lowest
         let steps: Int? = drop >= 0.3 ? Int((drop / p.stepHeight).rounded()) : nil
@@ -133,18 +135,6 @@ func stairsPlateaus(_ profile: [StairsBin], _ p: GeometryStairsParams) -> [Stair
         }
     }
     return merged
-}
-
-/// Floor that ends within ~2.5 m with nothing beyond: no floor, no lower steps dense enough to bin, and nothing
-/// standing there that would block the view → stairs going down (count unknown).
-private func stairsDropOff(_ pts: [Vec3], floor: StairsPlateau, floorEnd: Float, floorY: Float,
-                           _ p: GeometryStairsParams) -> StairsObservation? {
-    guard floor.bins >= 3, floorEnd <= 2.5 else { return nil }
-    let beyond = pts.filter {
-        abs($0.x) < 0.4 && $0.z > floorEnd + p.binSize && $0.z < floorEnd + 1.0 && $0.y >= floorY - p.riseMin
-    }
-    guard beyond.count < 5 else { return nil }
-    return StairsObservation(up: false, distance: floorEnd, steps: nil, more: false)
 }
 
 // MARK: - Floor height

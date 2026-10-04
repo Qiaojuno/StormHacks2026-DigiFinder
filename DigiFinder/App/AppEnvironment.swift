@@ -27,14 +27,16 @@ struct AppEnvironment {
         #endif
     }
 
-    /// LiDAR+ultra-wide → ultra-wide → wide → unavailable. Wave 1: stubs only; Wave 3 wires the real choice.
+    /// LiDAR+ultra-wide → ultra-wide → wide → unavailable (`CaptureFactory` picks the frame source and the matching
+    /// depth provider; LiDAR shares the Stream B calibration). On-device speech recognition.
     static func live() -> AppEnvironment {
-        make(frames: NoCameraSource(), depth: LiDARDepthProvider(), voice: SpeechVoiceInput())
+        let (frames, depth) = CaptureFactory.makeBest()
+        return make(frames: frames, depth: depth, voice: SpeechVoiceInput())
     }
 
-    /// NoCameraSource ("Camera unavailable") + typed input + debug event buttons.
+    /// NoCameraSource ("Camera unavailable") + typed input; the debug panel drives the session through the runner.
     static func simulator() -> AppEnvironment {
-        make(frames: NoCameraSource(), depth: EstimatedDepthProvider(), voice: TypedVoiceInput())
+        make(frames: NoCameraSource(reason: "Simulator"), depth: EstimatedDepthProvider(), voice: TypedVoiceInput())
     }
 
     private static func make(frames: FrameSource, depth: DepthProvider, voice: VoiceInput) -> AppEnvironment {
@@ -46,8 +48,8 @@ struct AppEnvironment {
         let products = Bundle.main.url(forResource: "products", withExtension: "sqlite").flatMap { ProductDatabase(url: $0) }
         let memory = ProductMemory()
         var gemini: GeminiClient?
-        if let key = secrets.geminiAPIKey, let model = secrets.geminiModel {
-            gemini = GeminiRESTClient(apiKey: key, model: model)
+        if secrets.hasGemini, let model = secrets.geminiModel {
+            gemini = GeminiRESTClient(apiKeys: secrets.geminiKeys, model: model)
         }
         return AppEnvironment(
             frames: frames, depth: depth, motion: motion, detector: detector,

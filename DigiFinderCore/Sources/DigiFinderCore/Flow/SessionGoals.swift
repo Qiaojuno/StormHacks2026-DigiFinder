@@ -19,7 +19,7 @@ extension ShoppingSession {
         case .command(let c): command(c)
         case .destination(let d): beginDestination(d)
         case .product(let g, let change): applyGoal(g, change, announce: true)
-        case .products(let goals): products(goals)
+        case .products(let goals, let change): products(goals, change)
         case .unknownProduct(let words, let change): unknownProduct(words, change)
         case .question(let q): question(q)
         }
@@ -42,8 +42,7 @@ extension ShoppingSession {
             if noisy && !state.marks.noisyRetry {
                 state.marks.noisyRetry = true
                 reply(SessionPhrases.notCaughtNoisy, prompt: false)
-                state.askingNextAt = state.now
-                listen(SessionTuning.autoListenSeconds)
+                state.askingNextAt = state.now                   // the user presses volume up to try again
                 return
             }
             finishShopping()
@@ -75,6 +74,9 @@ extension ShoppingSession {
             return true
         default:
             enqueue(pending, line: SessionPhrases.willAdd(name(pending)))
+            // Any other command ("no thanks", "I'm good" parse as "that's all") is just an unclear answer:
+            // consume it so it can't end the trip.
+            if case .command = r { return true }
             return r == .product(pending, .unspecified)
         }
     }
@@ -82,8 +84,7 @@ extension ShoppingSession {
     mutating func askSwitchOrAdd(_ g: Goal) {
         state.pendingChoice = g
         state.choiceAskedAt = state.now
-        reply(SessionPhrases.switchOrAdd(name(g)))
-        listen(SessionTuning.autoListenSeconds)
+        reply(SessionPhrases.switchOrAdd(name(g)))          // answered with volume up; ~12 s silence → add
     }
 
     mutating func clearChoice() {
@@ -103,11 +104,8 @@ extension ShoppingSession {
             begin(g, line: announce ? SessionPhrases.lookingFor(name(g)) : nil)
             return
         }
-        switch change {
-        case .replace: replaceGoal(g, announce: announce)
-        case .add: enqueue(g, line: SessionPhrases.added(name(g)))
-        case .unspecified: askSwitchOrAdd(g)
-        }
+        // Owner decision: one item at a time — a newly named item always replaces the current one (no list).
+        replaceGoal(g, announce: announce)
     }
 
     mutating func replaceGoal(_ g: Goal, announce: Bool) {
@@ -116,28 +114,25 @@ extension ShoppingSession {
         begin(g, line: announce ? SessionPhrases.instead(name(g)) : nil)
     }
 
+    /// No list any more (owner decision): what used to be queued replaces the current item.
     mutating func enqueue(_ g: Goal, line: String) {
-        if state.goal != g && !state.queue.contains(g) { state.queue.append(g) }
-        reply(line)
+        replaceGoal(g, announce: true)
     }
 
-    mutating func products(_ goals: [Goal]) {
+    /// "coffee and milk": one item at a time (owner decision) — the first named item is searched for, the rest dropped.
+    mutating func products(_ goals: [Goal], _ change: GoalChange) {
         guard let first = goals.first else { return }
-        guard goals.count > 1 else { applyGoal(first, .unspecified, announce: true); return }
-        let names = goals.map(name)
-        if hasActiveGoal {
-            for g in goals where state.goal != g && !state.queue.contains(g) { state.queue.append(g) }
-            reply(SessionPhrases.added(SessionPhrases.list(names)))
-        } else {
-            begin(first, line: SessionPhrases.findFirst(names))
-            for g in goals.dropFirst() where g != first && !state.queue.contains(g) { state.queue.append(g) }
-        }
+        applyGoal(first, .replace, announce: true)
     }
 
-    /// Start guiding to `g`: same aisle → straight to the shelf; outside → entrance; else → signs.
+    /// Start guiding to `g`: same aisle → InAisle (the item rule jumps to Pick once it's within reach);
+    /// outside → Entrance; else → FindAisle.
     mutating func begin(_ g: Goal, line: String?) {
         let sameAisle = standsInAisle(for: g)
-        if state.step == .sessionDone { state.foundCount = 0 }
+        if state.finished {
+            state.foundCount = 0
+            state.finished = false
+        }
         state.goal = g
         state.destination = nil
         state.askingNext = false
@@ -146,18 +141,27 @@ extension ShoppingSession {
         state.goalEpoch += 1
         state.progress = SessionGoalProgress(evidenceAt: state.now)
         out.append(.setTarget(g, candidates: [], destination: nil))
-        if let line { reply(line) }
-        if sameAisle {
+        if line != nil && placeWaiting {
+            // Owner decision: while the grocery check runs, say only "Loading."; "Okay, now looking for X." follows.
+            state.loadingGoal = true
+            reply(SessionPhrases.loading)
+        } else if let line {
+            reply(line)
+        }
+        if sameAisle && !isGeneral {
+            enter(.inAisle)
             announce(SessionPhrases.alsoInAisle(name(g)))
-            enterPointing(prompt: false)
-        } else if state.outside {
+            narrate(SessionPhrases.walkSlowly)
+        } else if state.step == .entrance {
+            // Already looking for the entrance: keep going.
+        } else if state.outside && !isGeneral {
             enterEntrance()
         } else {
-            enter(.findingSignage)
+            enterFindAisle()                               // the item check runs in every search phase
         }
     }
 
-    /// Next queued goal, else "What's next?" + auto-listen.
+    /// Next queued goal, else "What's next?" (answered with volume up; ~12 s silence → done).
     mutating func advanceToNext() {
         state.goal = nil
         state.destination = nil
@@ -169,23 +173,76 @@ extension ShoppingSession {
         }
         state.goalEpoch += 1
         out.append(.setTarget(nil, candidates: [], destination: nil))
-        enter(.askingGoal)
+        enter(.idle)                                       // keeps the current aisle for the next item
         state.askingNext = true
         state.askingNextAt = state.now
         announce(SessionPhrases.whatsNext)
-        listen(SessionTuning.autoListenSeconds)
     }
 
-    // MARK: Unknown items (§5.2)
+    // MARK: Unknown items, questions and unmatched words: Gemini when online, else offline (§5.2, §5.11)
 
     mutating func unknownProduct(_ words: String, _ change: GoalChange) {
-        if state.online {
-            reply(SessionPhrases.unknownOnline(words))
-            out.append(.lookupProduct(words))
-            state.lookup = SessionLookup(words: words, change: change, startedAt: state.now)
-        } else {
-            reply(SessionPhrases.unknownOffline(words))
-            applyGoal(Goal(product: words), change, announce: false)
+        if assist(words, kind: .unknownItem, change: change, noisy: false) { return }
+        offlineUnknown(words, change)
+    }
+
+    mutating func offlineUnknown(_ words: String, _ change: GoalChange) {
+        reply(SessionPhrases.unknownOffline(words))
+        applyGoal(Goal(product: words), change, announce: false)
+    }
+
+    /// Words the offline router couldn't place.
+    mutating func unmatched(_ text: String, noisy: Bool) {
+        if state.pendingChoice != nil { notUnderstood(noisy: noisy); return }   // no clear answer → add it
+        if state.askingNext {
+            state.askingNext = false
+            state.askingNextAt = nil
+        }
+        if assist(text, kind: .unmatched, change: .unspecified, noisy: noisy) { return }
+        notUnderstood(noisy: noisy)
+    }
+
+    /// Silently hands the transcript to Gemini (online and configured). False = take the offline path.
+    mutating func assist(_ text: String, kind: AssistKind, change: GoalChange, noisy: Bool) -> Bool {
+        guard state.online, state.onlineHelp else { return false }
+        let store: Bool? = state.placeOverride.map { $0 == .store } ?? state.place.map { $0 == .store }
+        let goal = state.goal.map(name) ?? (state.destination != nil ? activeTargetName : nil)
+        out.append(.assist(text, context: AssistContext(store: store, goal: goal, phase: state.step, kind: kind)))
+        state.assist = SessionAssist(text: text, kind: kind, change: change, noisy: noisy, startedAt: state.now)
+        state.askPending = true                              // overlay: the phase is kept
+        emitWork()
+        return true
+    }
+
+    /// Gemini's answer: speak `say`; `find` starts a search. Nothing back → the offline path, silently.
+    mutating func assistAnswer(say: String?, find: Goal?) {
+        guard state.askPending, let a = state.assist else { return }   // late answers are dropped
+        state.assist = nil
+        let line = say?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !line.isEmpty || find != nil else {
+            resumeAfterAsking(then: a)
+            return
+        }
+        state.askPending = false
+        emitWork()
+        if !line.isEmpty { reply(line) }
+        if let g = find {
+            applyGoal(g, a.change, announce: false)
+        } else if a.kind == .unknownItem {
+            // No item from Gemini: the Open Food Facts lookup decides (word search when it finds nothing).
+            out.append(.lookupProduct(a.text))
+            state.lookup = SessionLookup(words: a.text, change: a.change, startedAt: state.now)
+        }
+        replayHeld()
+        recalculate()
+    }
+
+    /// The offline behaviour for a request Gemini didn't answer.
+    mutating func offlineFallback(_ a: SessionAssist) {
+        switch a.kind {
+        case .question: reply(state.onlineHelp ? SessionPhrases.offlineQuestion : SessionPhrases.onlineHelpOff, prompt: false)
+        case .unknownItem: offlineUnknown(a.text, a.change)
+        case .unmatched: notUnderstood(noisy: a.noisy)
         }
     }
 
@@ -206,35 +263,18 @@ extension ShoppingSession {
         }
     }
 
-    // MARK: Ask (§5.11)
+    // MARK: Questions (§5.11)
 
     mutating func question(_ q: String) {
-        guard state.online else {
-            reply(SessionPhrases.offlineQuestion, prompt: false)
-            return
-        }
-        reply(SessionPhrases.checking, prompt: false)
-        out.append(.ask(q))
-        state.askStartedAt = state.now
-        state.resumeStep = state.step
-        state.step = .asking
+        if assist(q, kind: .question, change: .unspecified, noisy: false) { return }
+        reply(state.online && !state.onlineHelp ? SessionPhrases.onlineHelpOff : SessionPhrases.offlineQuestion, prompt: false)
+    }
+
+    /// Ends the Ask-pending overlay; `then` runs the offline path for a request Gemini didn't answer.
+    mutating func resumeAfterAsking(then fallback: SessionAssist? = nil) {
+        state.askPending = false
         emitWork()
-    }
-
-    mutating func askAnswer(_ answer: String?) {
-        guard state.step == .asking, state.askStartedAt != nil else { return }   // late answers are dropped
-        state.askStartedAt = nil
-        if let a = answer?.trimmingCharacters(in: .whitespacesAndNewlines), !a.isEmpty {
-            reply(a)
-            out.append(.chime(.done))
-        } else {
-            reply(SessionPhrases.noAnswer, prompt: false)
-        }
-        resumeAfterAsking()
-    }
-
-    mutating func resumeAfterAsking() {
-        resumePausedStep()
+        if let a = fallback { offlineFallback(a) }
         replayHeld()
         recalculate()
     }
@@ -246,7 +286,7 @@ extension ShoppingSession {
         case .stop: stop()
         case .thatsAll: finishShopping()
         case .repeatLast:
-            let text = state.lastPrompt.isEmpty ? (state.step == .askingGoal ? SessionPhrases.askGoal : state.lastLine) : state.lastPrompt
+            let text = state.lastPrompt.isEmpty ? (state.step == .idle ? SessionPhrases.askGoal : state.lastLine) : state.lastPrompt
             reply(text, prompt: false)
         case .lessDetail:
             state.verbosity = Verbosity(rawValue: max(Verbosity.brief.rawValue, state.verbosity.rawValue - 1)) ?? .brief
@@ -258,6 +298,9 @@ extension ShoppingSession {
             out.append(.describeSurroundings)
             state.surroundingsSince = state.now
         case .outside(let isOutside): setOutside(isOutside, saidByUser: true)
+        case .nearby(let on):
+            setPlaceOverride(on ? .general : .store)
+            reply(on ? SessionPhrases.nearbyOn : SessionPhrases.nearbyOff, prompt: false)
         case .finishTalking: break                           // "done": nothing more to do; resume
         case .switchGoal, .addGoal: reply(SessionPhrases.notCaught, prompt: false)   // nothing to switch to
         }
@@ -293,17 +336,18 @@ extension ShoppingSession {
             let left = state.queue.isEmpty ? "" : " " + SessionPhrases.stillOnList(state.queue.map(name))
             reply(SessionPhrases.goingToCheckout + left)
         }
-        if state.outside { enterEntrance() } else { enter(.findingDestination) }
+        if state.outside { enterEntrance() } else { enterFindAisle() }   // FindAisle with a destination target
     }
 
     mutating func arrivedAtDestination() {
-        guard state.step == .findingDestination, let d = state.destination else { return }
+        guard state.step == .findAisle, let d = state.destination else { return }
         announce(d == .checkout ? SessionPhrases.atCheckout : SessionPhrases.atCustomerService)
         if !state.queue.isEmpty { announce(SessionPhrases.stillOnList(state.queue.map(name))) }
         out.append(.chime(.done))
         state.destination = nil
         state.goalEpoch += 1
         out.append(.setTarget(nil, candidates: [], destination: nil))
+        state.currentAisle = nil
         enter(.idle)
     }
 
@@ -319,6 +363,8 @@ extension ShoppingSession {
         } else {
             reply(SessionPhrases.stopped, prompt: false)
             out.append(.chime(.done))
+            state.askingNext = false
+            state.askingNextAt = nil
             enter(.idle)
         }
     }
@@ -332,9 +378,7 @@ extension ShoppingSession {
     mutating func pauseLost() {
         announce(SessionPhrases.guidancePaused)
         out.append(.chime(.done))
-        state.resumeStep = state.step
-        state.step = .paused
-        state.pauseReason = .lost
+        state.pause = .lost                                  // overlay: the phase is kept
         emitWork()
     }
 
@@ -350,7 +394,9 @@ extension ShoppingSession {
         state.lookup = nil
         state.goalEpoch += 1
         out.append(.setTarget(nil, candidates: [], destination: nil))
-        enter(.sessionDone)
+        state.currentAisle = nil
+        state.finished = true
+        enter(.idle)
     }
 }
 
@@ -419,7 +465,7 @@ extension ShoppingSession {
 
     func standsInAisle(for g: Goal) -> Bool {
         guard let here = state.currentAisle, let there = g.category else { return false }
-        let atShelf = [.walkingAisle, .pointing, .holdUpToCheck, .askingGoal].contains(state.step)   // askingGoal: "What's next?" at the shelf
+        let atShelf = [.inAisle, .pick, .confirm].contains(state.step) || (state.step == .idle && state.askingNext)   // "What's next?" at the shelf
         return atShelf && sharesAisle(here, there)
     }
 }

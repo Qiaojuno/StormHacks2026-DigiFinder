@@ -1,17 +1,17 @@
-// Pointing, hold-up check and add to cart (§5.2 "Point at the shelf" → "Confirm and add to cart").
+// Pick (pointing), Confirm (hold-up check) and add to cart (§5.2).
 import Foundation
 
 extension ShoppingSession {
     mutating func pointed(_ p: PointedProduct?) {
-        guard state.step == .pointing, let p else { return }
+        guard state.step == .pick, let p else { return }
         let text = p.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         if p.match >= SessionTuning.pointMatch {
             state.progress.lastMatchAt = state.now
             noteEvidence()
+            enter(.confirm)
             announce(p.alternative.map { SessionPhrases.grabWithAlternative(text, $0) } ?? SessionPhrases.grab(text))
             announce(SessionPhrases.holdUp)
-            enter(.holdUpToCheck)
             return
         }
         if p.match >= SessionTuning.nearMiss { noteEvidence() }
@@ -21,20 +21,28 @@ extension ShoppingSession {
         if guide(line, dedupe: true, repeatAfter: SessionTuning.pointRepeat) { state.marks.lastPointCueAt = state.now }
     }
 
+    /// "The shelf is about one step ahead." once per Pick; closer than ~0.3 m is "Step back a little" (§5.8).
+    mutating func shelfDistance(_ meters: Float) {
+        guard state.step == .pick, !state.marks.shelfDistanceSaid, meters.isFinite, meters >= 0.3, meters <= 4,
+              !guidanceHeld else { return }
+        state.marks.shelfDistanceSaid = true
+        narrate(SessionPhrases.shelfAhead(meters))
+    }
+
     /// Label check on the held item. nil = unclear (the hold-up timers prompt).
     mutating func confirmed(_ info: ProductInfo?, isGoal: Bool) {
         guard let goal = state.goal, let info else { return }
         switch state.step {
-        case .holdUpToCheck: break
-        case .pointing where isGoal: break                  // a visible barcode wins
+        case .confirm: break
+        case .pick where isGoal: break                      // a visible barcode wins
         default: return
         }
         noteEvidence()
         state.progress.lastMatchAt = state.now
         let product = productName(info)
         guard isGoal else {
-            announce(SessionPhrases.wrongItem(product, not: goalDetail(goal)))
-            enterPointing(prompt: false)
+            enter(.pick)                                    // back to pointing (voice only, no haptics)
+            announce(SessionPhrases.wrongItem(wrongItemLine(found: info, goal: goal)))
             return
         }
         // Word search has no database candidates: read the label back.
@@ -57,7 +65,7 @@ extension ShoppingSession {
         }
     }
 
-    /// ~90 s in the right aisle with no match → not found (§5.12).
+    /// Pick / Confirm: ~90 s since entering the aisle with no match → not found (§5.12).
     mutating func notFoundTimer() {
         guard let entered = state.progress.aisleEnteredAt else { return }
         let anchor = max(entered, state.progress.lastMatchAt ?? entered)

@@ -82,28 +82,49 @@ public extension NormRect {
 
 /// The only converters into contract space (upright portrait, normalized, origin top-left).
 public enum Geometry {
-    /// Vision result (normalized, origin bottom-left, image already upright via orientation `.right`) → contract space.
+    /// Vision result (normalized, origin bottom-left, image already upright via the camera orientation) → contract space.
     public static func fromVision(_ p: NormPoint) -> NormPoint { NormPoint(x: p.x, y: 1 - p.y) }
 
     public static func fromVision(_ r: NormRect) -> NormRect {
         NormRect(x: r.x, y: 1 - r.y - r.height, width: r.width, height: r.height)
     }
 
+    // MARK: Phone hanging upside down (owner decision: a "flip camera" button for lanyards that hang that way)
+
+    private static let flipLock = NSLock()
+    private static var upsideDown = false
+
+    /// The phone hangs upside down on the lanyard: the portrait image is the sensor turned 90° counterclockwise
+    /// (Vision orientation `.left`) instead of clockwise, so every sensor ↔ portrait mapping (and left/right) flips.
+    /// Set from the app's setting; read from any thread.
+    public static var cameraUpsideDown: Bool {
+        get { flipLock.lock(); defer { flipLock.unlock() }; return upsideDown }
+        set { flipLock.lock(); upsideDown = newValue; flipLock.unlock() }
+    }
+
     /// Landscape sensor pixel (the buffer's own pixel grid, as used by intrinsics) → upright portrait, normalized.
-    /// The back-camera buffer is shown upright by a 90° clockwise turn (Vision orientation `.right`):
-    /// buffer row 0 becomes the right edge, buffer column 0 the top edge.
+    /// Normally the back-camera buffer is shown upright by a 90° clockwise turn (Vision orientation `.right`):
+    /// buffer row 0 becomes the right edge, buffer column 0 the top edge. Upside down (`.left`): row 0 is the left
+    /// edge, column 0 the bottom edge.
     public static func fromSensorPixels(_ p: (x: Double, y: Double), width: Double, height: Double) -> NormPoint {
-        NormPoint(x: 1 - p.y / height, y: p.x / width)
+        cameraUpsideDown ? NormPoint(x: p.y / height, y: 1 - p.x / width)
+                         : NormPoint(x: 1 - p.y / height, y: p.x / width)
     }
 
     /// Inverse of `fromSensorPixels`.
     public static func toSensorPixels(_ p: NormPoint, width: Double, height: Double) -> (x: Double, y: Double) {
-        (x: p.y * width, y: (1 - p.x) * height)
+        cameraUpsideDown ? (x: (1 - p.y) * width, y: p.x * height)
+                         : (x: p.y * width, y: (1 - p.x) * height)
     }
 
     /// Horizontal angle right of straight ahead (degrees, negative = left) for an upright-portrait x,
     /// using the sensor intrinsics (`sensorHeight` = buffer height in pixels, the portrait image's width).
+    /// Upside down, the sensor's rows run the other way across the user's view.
     public static func degreesRight(portraitX x: Double, intrinsics k: Mat3, sensorHeight: Double) -> Double {
+        if cameraUpsideDown {
+            let v = x * sensorHeight
+            return atan((v - Double(k.cy)) / Double(k.fy)) * 180 / .pi
+        }
         let v = (1 - x) * sensorHeight
         return atan((Double(k.cy) - v) / Double(k.fy)) * 180 / .pi
     }

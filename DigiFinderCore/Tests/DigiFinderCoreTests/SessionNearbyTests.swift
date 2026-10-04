@@ -1,0 +1,86 @@
+// Grocery store or anywhere else (`general`): the place decides the search, never the alerts.
+import XCTest
+@testable import DigiFinderCore
+
+final class SessionNearbyTests: XCTestCase {
+    func testHouseholdWords() {
+        XCTAssertEqual(MatchingHousehold.visualClass(for: "my phone"), "Mobile phone")
+        XCTAssertEqual(MatchingHousehold.visualClass(for: "the TV remote"), "Remote control")
+        XCTAssertEqual(MatchingHousehold.visualClass(for: "the black mug"), "Mug")
+        XCTAssertNil(MatchingHousehold.visualClass(for: "keys"))              // no camera class: labels only
+    }
+
+    /// Owner spec: placeClassified(false) → no sign prompts, no step-back vote, no aisle flow.
+    func testGeneralPlaceHasNoSignPrompts() {
+        var h = SessionHarness(grocery: false)
+        XCTAssertEqual(h.state.place, .general)
+        let start = h.startGoal(SessionFixtures.coffee)
+        XCTAssertEqual(said(start), ["Looking for coffee.", "Turn slowly."])
+        let quiet = said(h.advance(15))
+        XCTAssertFalse(quiet.contains("I can't see any signs. Turn slowly."))
+        XCTAssertFalse(quiet.contains("Take two steps back."))
+        XCTAssertEqual(said(h.send(.signs([SessionFixtures.coffeeSign]))), [])
+        XCTAssertEqual(said(h.send(.arrivedAtAisle(clock: 9))), [])
+        XCTAssertEqual(said(h.send(.aisleVerdict("coffee", evidence: ["coffee"]))), [])
+        XCTAssertEqual(h.state.step, .findAisle)
+        XCTAssertEqual(said(h.send(.itemSeen(clock: 2, distance: 3))), ["Coffee at 2 o'clock, about 3 meters."])
+    }
+
+    /// General is the default (owner decision): only a confident "grocery" answer runs the store flow.
+    func testOnlyAGroceryYesRunsTheStoreFlow() {
+        var store = SessionHarness(grocery: true)
+        store.startGoal(SessionFixtures.coffee)
+        XCTAssertEqual(said(store.advance(3)), ["I can't see any signs. Turn slowly."])
+
+        var unknown = SessionHarness(grocery: nil)
+        unknown.send(.placeClassified(nil))
+        XCTAssertEqual(unknown.state.place, .general)
+        unknown.startGoal(SessionFixtures.coffee)
+        XCTAssertFalse(said(unknown.advance(3)).contains("I can't see any signs. Turn slowly."), "no sign prompts")
+    }
+
+    func testWaitingForTheAnswerIsQuietButSignsAreRead() {
+        var h = SessionHarness(grocery: nil)
+        h.startGoal(SessionFixtures.coffee)
+        XCTAssertEqual(said(h.advance(5)), [], "quiet while the place check runs")
+        XCTAssertEqual(said(h.send(.signs([SessionFixtures.coffeeSign]))), [], "general until a grocery yes: no sign directions")
+        let a = h.send(.placeClassified(PlaceAnswer(grocery: false, confidence: 0.9, scene: "home kitchen")))
+        XCTAssertEqual(said(a), ["Okay, now looking for coffee.", "Turn slowly."], "no place line: the search runs")
+        XCTAssertEqual(h.state.place, .general)
+    }
+
+    func testGeneralPlaceFindsAHouseholdObject() {
+        var h = SessionHarness(grocery: false)
+        let phone = Goal(product: "phone", visualClass: "Mobile phone")
+        h.send(.routed(.product(phone, .unspecified)))
+        h.advance(10)
+        XCTAssertEqual(h.state.step, .findAisle)
+        let found = h.send(.itemSeen(clock: 1, distance: 0.8))
+        XCTAssertEqual(said(found).first, "Phone is right in front of you, within reach.")
+        XCTAssertTrue(found.contains(.chime(.done)))
+        XCTAssertTrue(found.contains(.markDone(phone)))
+    }
+
+    func testGeneralPlaceGivesUpAfterAMinute() {
+        var h = SessionHarness()
+        _ = h.session.setNearbyMode(true)
+        h.send(.routed(.product(Goal(product: "phone", visualClass: "Mobile phone"), .unspecified)))
+        let e = said(h.advance(61))
+        XCTAssertTrue(e.contains("Turn slowly."))
+        XCTAssertTrue(e.contains("I can't find phone nearby. Try another spot."))
+    }
+
+    func testManualOverridesWin() {
+        var h = SessionHarness(grocery: true)
+        h.startGoal(SessionFixtures.coffee)
+        let e = h.send(.routed(.command(.nearby(true))))
+        XCTAssertTrue(said(e).contains("Okay, looking nearby."))
+        XCTAssertEqual(h.state.placeOverride, .general)
+        XCTAssertFalse(said(h.advance(15)).contains("I can't see any signs. Turn slowly."))
+        h.send(.routed(.command(.nearby(false))))
+        XCTAssertEqual(h.state.placeOverride, .store)
+        XCTAssertEqual(said(h.advance(3.5)), ["I can't see any signs. Turn slowly."])
+        XCTAssertEqual(VoiceCommandParser.parse("it s nearby"), .nearby(true))
+        XCTAssertEqual(VoiceCommandParser.parse("store mode"), .nearby(false))
+    }
+}

@@ -22,6 +22,10 @@ final class StairsDetector {
     private var tracker = GeometryStairsTracker()
     private var lastSteps: Int?
     private var lastProfileTime = -Double.infinity
+    /// Last time YOLO saw "Stairs" near the middle of the image.
+    private var lastYoloStairs = -Double.infinity
+    /// A down-staircase counts only if YOLO saw stairs within this many seconds.
+    static let downNeedsYoloWithin = 1.0
 
     private(set) var floorY: Float?
     /// This frame's reading (before confirmation).
@@ -41,14 +45,19 @@ final class StairsDetector {
             latest = nil
             return announce(tracker.walked(steps: walked, t: t))
         }
-        let obs = detectStairs(pts, floorY: fy)
+        var obs = detectStairs(pts, floorY: fy)
+        // Stairs going down are hard to see from chest height (the profile can't tell a drop from a floor it simply
+        // doesn't see), so they're only announced when YOLO sees "Stairs" too.
+        let yolo = Self.yoloSeesStairs(detections)
+        if yolo { lastYoloStairs = t }
+        if let o = obs, !o.up, t - lastYoloStairs > Self.downNeedsYoloWithin { obs = nil }
         latest = obs
         if t - lastProfileTime >= Self.profileInterval || t < lastProfileTime {
             lastProfileTime = t
             profile = Self.profile(pts, floorY: fy)
         }
         if let obs {
-            return announce(tracker.update(obs, yoloStairs: Self.yoloSeesStairs(detections), t: t))
+            return announce(tracker.update(obs, yoloStairs: yolo, t: t))
         }
         // The floor near the feet isn't visible on a chest lanyard: count down from the last LiDAR distance.
         _ = tracker.update(nil, yoloStairs: false, t: t)

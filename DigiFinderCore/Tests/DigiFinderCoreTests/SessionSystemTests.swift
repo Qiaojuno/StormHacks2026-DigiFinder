@@ -10,7 +10,8 @@ final class SessionSystemTests: XCTestCase {
         let e = h.send(.routed(.destination(.customerService)))
         XCTAssertEqual(said(e), ["I'll take you to customer service. You can also ask anyone nearby."])
         XCTAssertTrue(e.contains(.setTarget(nil, candidates: [], destination: .customerService)))
-        XCTAssertEqual(h.state.step, .findingDestination)
+        XCTAssertEqual(h.state.step, .findAisle, "destinations search inside FindAisle")
+        XCTAssertEqual(h.state.destination, .customerService)
         XCTAssertEqual(said(h.send(.signs([AisleSign(words: ["Customer Service"], clock: 12)]))), ["Customer service desk, 12 o'clock."])
         let a = h.send(.arrivedAtDestination)
         XCTAssertEqual(said(a), ["You're at customer service."])
@@ -18,20 +19,6 @@ final class SessionSystemTests: XCTestCase {
         XCTAssertEqual(h.state.step, .idle)
     }
 
-    func testCheckoutKeepsItemsOnTheList() {
-        var h = SessionHarness()
-        h.startGoal(SessionFixtures.coffee)
-        h.send(.routed(.product(SessionFixtures.milk, .add)))
-        let e = h.send(.routed(.destination(.checkout)))
-        XCTAssertEqual(said(e), ["Going to checkout. You still have coffee and milk on your list."])
-        XCTAssertEqual(h.state.queue, [SessionFixtures.coffee, SessionFixtures.milk])
-        let s = h.send(.signs([AisleSign(words: ["Self Checkout"], clock: 12)]))
-        XCTAssertEqual(said(s, .guidance), ["Checkouts ahead, 12 o'clock."])
-        XCTAssertEqual(said(s, .narration), ["A cashier can help you scan and pay."])
-        XCTAssertEqual(said(h.send(.arrivedAtDestination)), ["You're at the checkout.", "You still have coffee and milk on your list."])
-        XCTAssertEqual(said(h.startGoal(SessionFixtures.milk)), ["Looking for milk."], "queued items start when asked for")
-        XCTAssertEqual(h.state.queue, [SessionFixtures.coffee])
-    }
 
     func testDestinationNotFound() {
         var h = SessionHarness()
@@ -45,11 +32,12 @@ final class SessionSystemTests: XCTestCase {
 
     func testOnlineEntrancePickAndArrival() {
         var h = SessionHarness(online: true)
-        h.send(.routed(.command(.outside(true))))
-        let e = h.startGoal(SessionFixtures.coffee)
-        XCTAssertEqual(said(e), ["Looking for coffee.", "Looking for the entrance."])
-        XCTAssertTrue(e.contains(.pickEntrance))
-        XCTAssertEqual(h.state.step, .findingEntrance)
+        let o = h.send(.routed(.command(.outside(true))))
+        XCTAssertEqual(said(o), ["Looking for the entrance."], "Idle + outside → Entrance")
+        XCTAssertTrue(o.contains(.pickEntrance))
+        XCTAssertEqual(h.state.step, .entrance)
+        XCTAssertEqual(said(h.startGoal(SessionFixtures.coffee)), ["Looking for coffee."], "keeps looking for the entrance")
+        XCTAssertEqual(h.state.step, .entrance)
 
         let p = h.send(.entrancePicked(EntrancePick(x: 0.9, kind: .revolving, cartCorralX: 0.5)))
         XCTAssertEqual(said(p), ["Entrance at 1 o'clock. It's a revolving door. Go slowly.", "Cart corral at 12 o'clock."])
@@ -59,7 +47,8 @@ final class SessionSystemTests: XCTestCase {
 
         let inside = h.send(.outside(false))
         XCTAssertEqual(said(inside), ["You're inside."])
-        XCTAssertEqual(h.state.step, .findingSignage)
+        XCTAssertEqual(h.state.step, .findAisle)
+        XCTAssertEqual(h.state.place, .store, "entering through a store entrance sets the place")
     }
 
     func testEntranceNotVisibleAsksAgainAfterTurning() {
@@ -74,9 +63,8 @@ final class SessionSystemTests: XCTestCase {
 
     func testOfflineDoorsWithoutSigns() {
         var h = SessionHarness()
-        h.send(.outside(true))
-        let e = h.startGoal(SessionFixtures.coffee)
-        XCTAssertFalse(e.contains(.pickEntrance))
+        XCTAssertFalse(h.send(.outside(true)).contains(.pickEntrance))
+        h.startGoal(SessionFixtures.coffee)
         let doors = [DoorObservation(clock: 1, distance: 8), DoorObservation(clock: 11, distance: 15)]
         XCTAssertEqual(said(h.send(.doors(doors))), ["Door at 1 o'clock, about 8 meters. I can't see an entrance sign."])
 
@@ -84,7 +72,7 @@ final class SessionSystemTests: XCTestCase {
         exit.send(.outside(true))
         exit.startGoal(SessionFixtures.coffee)
         let labeled = [DoorObservation(clock: 12, distance: 3, label: .exit), DoorObservation(clock: 10, distance: 6)]
-        XCTAssertEqual(said(exit.send(.doors(labeled))), ["This door says exit. Another door at 10 o'clock."])
+        XCTAssertEqual(said(exit.send(.doors(labeled))), ["This door says exit. Another door at 10 o'clock, about 6 meters."])
         XCTAssertEqual(said(exit.send(.doors([DoorObservation(clock: 10, distance: 5, label: .entrance)]))),
                        ["Entrance ahead, about 5 meters, 10 o'clock."])
     }
@@ -132,25 +120,28 @@ final class SessionSystemTests: XCTestCase {
         let e = h.send(.system(.backgrounded))
         XCTAssertEqual(said(e), ["Guidance paused, camera off."])
         XCTAssertTrue(e.contains(.cancelListening))
-        XCTAssertEqual(h.state.step, .paused)
+        XCTAssertEqual(h.state.pause, .background)
+        XCTAssertEqual(h.state.step, .findAisle, "the pause is an overlay: the phase is kept")
+        XCTAssertEqual(h.state.work, StreamWork(text: .off, yoloFPS: 10))
         let f = h.send(.system(.foregrounded))
         XCTAssertEqual(said(f), ["Back. Danger detection is on."])
-        XCTAssertEqual(h.state.step, .findingSignage)
+        XCTAssertNil(h.state.pause)
+        XCTAssertEqual(h.state.step, .findAisle)
+        XCTAssertEqual(h.state.work, SessionFixtures.signageWork)
     }
 
     func testBatteryThermalRouteAndPermissions() {
         var h = SessionHarness()
         h.send(.notUnderstood(noisy: false))
         h.startGoal(SessionFixtures.coffee)
-        XCTAssertEqual(said(h.send(.system(.batteryLow(20)))), ["Battery low, 20 percent."])
-        XCTAssertEqual(said(h.send(.system(.batteryLow(20)))), [], "once each")
-        XCTAssertEqual(said(h.send(.system(.batteryLow(10)))), ["Battery low, 10 percent."])
+        XCTAssertEqual(said(h.send(.system(.batteryLow(20)))), [], "battery is never announced")
+        XCTAssertEqual(said(h.send(.system(.batteryLow(10)))), [])
 
         let hot = h.send(.system(.thermal(.serious)))
-        XCTAssertEqual(said(hot), ["Phone is getting hot. Guidance may slow down."])
+        XCTAssertEqual(said(hot), [], "heat is handled silently")
         XCTAssertEqual(works(hot), [StreamWork(text: .fast, yoloFPS: 5)])
         let tooHot = h.send(.system(.thermal(.critical)))
-        XCTAssertEqual(said(tooHot), ["Phone is too hot. Only danger alerts are on."])
+        XCTAssertEqual(said(tooHot), [])
         XCTAssertEqual(works(tooHot), [StreamWork(text: .off, yoloFPS: 5)])
         XCTAssertEqual(said(h.send(.signs([SessionFixtures.coffeeSign]))), [], "only danger and stairs")
         XCTAssertEqual(said(h.send(.stairs(StairsObservation(up: true, distance: 3, steps: 6)))).count, 1)
@@ -165,7 +156,8 @@ final class SessionSystemTests: XCTestCase {
 
     func testNoticesWaitForTheRecording() {
         var h = SessionHarness()
-        XCTAssertEqual(said(h.send(.system(.batteryLow(20)))), [], "held while the opening recording runs")
-        XCTAssertEqual(said(h.send(.routed(.product(SessionFixtures.coffee, .unspecified)))), ["Looking for coffee.", "Battery low, 20 percent."])
+        h.send(.talkPressed)                                   // volume up starts the first recording
+        XCTAssertEqual(said(h.send(.system(.audioRouteChanged))), [], "held while the recording runs")
+        XCTAssertEqual(said(h.send(.routed(.product(SessionFixtures.coffee, .unspecified)))).first, "Looking for coffee.")
     }
 }

@@ -1,12 +1,12 @@
 import SwiftUI
 import DigiFinderCore
 
-/// One-sheet setup (§5.13): speech speed and voice, units, tones and danger vibrations, detail level,
-/// the first-launch walkthrough and the licenses.
+/// The Settings page (§5.13): how it works (walkthrough), speech speed and voice, units, tones and danger
+/// vibrations, detail level, licenses, and the debug overlay. Home (bottom bar) returns to the camera view.
 struct SetupView: View {
     let model: AppViewModel
-    @Environment(\.dismiss) private var dismiss
     @State private var voices: [UIVoiceOption] = []
+    @State private var showDebug = false
 
     var body: some View {
         @Bindable var store = model.settings
@@ -45,6 +45,17 @@ struct SetupView: View {
                 }
 
                 Section {
+                    Toggle("Nearby mode", isOn: $store.settings.nearbyMode)
+                        .accessibilityHint("Looks around for the item itself, without store signs or aisles.")
+                } header: {
+                    header("Where you are")
+                } footer: {
+                    Text("On: for home or a room. It looks for the item itself and tells you where it is. "
+                         + "Off: in a store it still looks first, then follows signs and aisles. "
+                         + "You can also say \"it's nearby\" or \"store mode\".")
+                }
+
+                Section {
                     Picker("Distances in", selection: $store.settings.units) {
                         ForEach(UIDistanceUnits.allCases) { Text($0.title).tag($0) }
                     }
@@ -79,19 +90,15 @@ struct SetupView: View {
 
                 Section {
                     NavigationLink("Licenses") { LicensesView() }
+                    Button("Debug overlay") { showDebug = true }
+                        .accessibilityHint("Camera preview, depth, detections and test events.")
                 }
             }
             .environment(\.defaultMinListRowHeight, UITheme.minTarget)
-            .navigationTitle("Setup")
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .font(.headline)
-                        .frame(minWidth: UITheme.minTarget, minHeight: 44)
-                }
-            }
         }
+        .fullScreenCover(isPresented: $showDebug) { DebugOverlayView(model: model) }
         .onAppear { if voices.isEmpty { voices = UIVoiceOption.englishVoices() } }
     }
 

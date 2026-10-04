@@ -1,8 +1,7 @@
 import Foundation
 import DigiFinderCore
 
-/// Runner features the UI needs beyond the frozen `SessionRunner` API (see CONTRACT_CHANGES.md, "SessionRunner: UI hooks").
-/// Wave 3 makes `SessionRunner` conform. Until then the view models find no conformance and these actions do nothing.
+/// Runner features the UI needs beyond `start` / `volumeUp` / `volumeDown` / `screenTalkPressed`; `SessionRunner` adopts it.
 @MainActor
 protocol UISessionDriving: AnyObject {
     /// Typed text treated exactly like a finished transcript (debug panel / Simulator): route it and send

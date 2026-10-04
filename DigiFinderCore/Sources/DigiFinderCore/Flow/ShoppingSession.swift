@@ -1,12 +1,13 @@
 // Shopping flow state machine (§5): (state, event) -> (state, [Effect]). Pure: no clock, no I/O.
 //
-// Runner contract (see CONTRACT_CHANGES.md "Flow runtime semantics"):
+// Runner contract (also documented on `SessionEvent` / `Effect` in Contracts/Session.swift):
 // - `.tick(t)` carries a monotonic clock in seconds; the first tick only sets the reference.
 // - `.listen` means: wait for speech to finish (max ~3 s), beep, record. The session never emits its own beep.
 // - An empty or silent recording must arrive as `.notUnderstood(noisy:)`; a cancelled one sends nothing.
 // - `.motion` yaw grows clockwise (turning right), like `clockPosition(degreesRight:)`.
 // - Danger lines are spoken by the safety lane; stairs lines come from here as `.say(_, .stairs)`.
 // - The session has no database: `.setTarget` always carries `candidates: []`; the runner fills them.
+// - Setup choices arrive through `setVerbosity`, `setDistanceInSteps` and `setOnlineHelp` (not events).
 
 public struct ShoppingSession {
     public internal(set) var state = SessionState()
@@ -43,6 +44,29 @@ public struct ShoppingSession {
     }
 }
 
+// MARK: - Settings (setup sheet, §5.13)
+
+extension ShoppingSession {
+    /// Detail level from setup; "quieter" / "more detail" change it too.
+    public mutating func setVerbosity(_ v: Verbosity) { state.verbosity = v }
+    /// Spoken distances in steps (~0.7 m each) instead of meters.
+    public mutating func setDistanceInSteps(_ on: Bool) { state.distanceInSteps = on }
+    /// Settings "Nearby mode": on forces the not-a-store search (skips the Gemini check); off goes back to automatic.
+    public mutating func setNearbyMode(_ on: Bool) -> [Effect] {
+        out = []
+        spoken = []
+        setPlaceOverride(on ? .general : nil)
+        let effects = out
+        out = []
+        spoken = []
+        return effects
+    }
+    /// false without Secrets.plist (no Gemini): questions, the entrance pick and the grocery check take the offline path.
+    public mutating func setOnlineHelp(_ available: Bool) { state.onlineHelp = available }
+    /// See `SessionState.onDeviceItemSearch` (off in the app).
+    public mutating func setOnDeviceItemSearch(_ on: Bool) { state.onDeviceItemSearch = on }
+}
+
 // MARK: - Dispatch
 
 extension ShoppingSession {
@@ -50,7 +74,12 @@ extension ShoppingSession {
         switch e {
         case .started: start()
         case .talkPressed: talkPressed()
-        case .donePressed: if state.isListening { out.append(.finishListening) }
+        case .recordingCancelled:
+            if state.isListening {
+                recordingEnded()
+                afterRecording()
+            }
+        case .donePressed: stopStream()                    // volume down / stop: everything stops (owner decision)
         case .routed(let request):
             recordingEnded()
             handleRequest(request)
@@ -63,8 +92,16 @@ extension ShoppingSession {
         case .motion(let yaw, let steps, let walking): motion(yaw: yaw, steps: steps, walking: walking)
         case .danger(let cut): danger(cutRecording: cut)
         case .dangerCleared: dangerCleared()
+        case .pathClear(let meters): pathClear(meters: meters)
+        case .itemSeen(let clock, let distance): if canObserve { itemSeen(clock: clock, distance: distance) }
+        case .searchHint(let text): if canObserve { searchHint(text) }    // never held: a stale hint is useless
         case .stairs(let o): stairs(o)
-        case .askAnswer(let answer): askAnswer(answer)
+        case .assistAnswer(let say, let find): assistAnswer(say: say, find: find)
+        case .unmatched(let text, let noisy):
+            recordingEnded()
+            unmatched(text, noisy: noisy)
+            afterRecording()
+        case .placeClassified(let answer): placeClassified(answer)
         case .productLookedUp(let goal):
             if state.isListening { hold(e, goalBound: false) } else { productLookedUp(goal) }
         case .surroundings(let text):
@@ -74,12 +111,13 @@ extension ShoppingSession {
         case .signs(let signs): signsSeen(signs)
         case .doors(let doors): if canObserve { doorsSeen(doors) }
         case .pointed(let p): if canObserve { pointed(p) }
+        case .shelfDistance(let m): if canObserve { shelfDistance(m) }
         case .positioning(let hint): if canObserve { positioning(hint) }
         case .outside(let isOutside):
-            if state.step == .paused { return }
+            if state.pause != nil { return }
             if observationsHeld { hold(e, goalBound: false) } else { setOutside(isOutside, saidByUser: false) }
-        case .entrancePicked, .aisleVerdict, .arrivedAtAisle, .arrivedAtDestination, .confirmed:
-            if state.step == .paused { return }
+        case .entrancePicked, .aisleVerdict, .arrivedAtAisle, .arrivedAtDestination, .confirmed, .aisleEnd:
+            if state.pause != nil { return }
             if observationsHeld {
                 if case .confirmed(nil, _) = e { return }       // "unclear" frames carry nothing to replay
                 hold(e, goalBound: true)
@@ -96,6 +134,7 @@ extension ShoppingSession {
         case .arrivedAtAisle(let clock): arrivedAtAisle(clock: clock)
         case .arrivedAtDestination: arrivedAtDestination()
         case .confirmed(let info, let isGoal): confirmed(info, isGoal: isGoal)
+        case .aisleEnd: aisleEndSeen()
         default: break
         }
     }
@@ -108,11 +147,12 @@ extension ShoppingSession {
     }
 
     /// Transitions wait while the user talks or an Ask answer is pending (guidance paused, §5.10, §5.11).
-    var observationsHeld: Bool { state.isListening || state.step == .asking }
-    var canObserve: Bool { !observationsHeld && state.step != .paused }
-    /// Repeating prompts and timer lines stay quiet.
+    var observationsHeld: Bool { state.isListening || state.askPending }
+    var canObserve: Bool { state.streaming && !observationsHeld && state.pause == nil }
+    /// Repeating prompts and timer lines stay quiet (also while "Switch to milk, or add it?" awaits an answer).
     var guidanceHeld: Bool {
-        observationsHeld || state.step == .paused || state.dangerSince != nil || state.thermal == .critical
+        !state.streaming || observationsHeld || state.pause != nil || state.dangerSince != nil || state.thermal == .critical
+            || state.pendingChoice != nil
     }
     var hasActiveGoal: Bool { state.goal != nil || state.destination != nil }
 
@@ -134,10 +174,12 @@ extension ShoppingSession {
 
 extension ShoppingSession {
     mutating func start() {
-        guard state.step == .idle || state.step == .sessionDone else { return }
+        guard state.step == .idle, !hasActiveGoal, !state.askPending, state.pause == nil else { return }
         var fresh = SessionState()
         fresh.online = state.online
         fresh.verbosity = state.verbosity
+        fresh.distanceInSteps = state.distanceInSteps
+        fresh.onlineHelp = state.onlineHelp
         fresh.thermal = state.thermal
         fresh.outside = state.outside
         fresh.isWalking = state.isWalking
@@ -148,45 +190,104 @@ extension ShoppingSession {
         fresh.hasMotion = state.hasMotion
         fresh.work = state.work
         fresh.stairs = state.stairs
+        fresh.place = state.place
+        fresh.placeOverride = state.placeOverride
+        fresh.placeCheck = state.placeCheck
+        fresh.placeDecidedAt = state.placeDecidedAt
+        fresh.placeConfidence = state.placeConfidence
+        fresh.placeScene = state.placeScene
+        fresh.placeTries = state.placeTries
+        fresh.onDeviceItemSearch = state.onDeviceItemSearch
         fresh.speech.notices = state.speech.notices
         fresh.goalEpoch = state.goalEpoch + 1
         state = fresh
-        enter(.askingGoal)
-        announce(SessionPhrases.askGoal)
-        listen(SessionTuning.talkSeconds)
+        // Owner decision: the app opens stopped (camera, danger, checks off) and silent apart from one hint.
+        // The first volume up starts the stream, records, and runs the grocery check (`talkPressed`).
+        state.streaming = false
+        enter(.idle)
+        out.append(.setStreaming(false))
+        announce(SessionPhrases.pressToStart)
     }
 
-    /// Volume up / screen Talk (the runner applies the walking and screen rules first).
-    mutating func talkPressed() {
-        if state.isListening {
-            out.append(.finishListening)                       // pressed again = done; never restarts the recording
-            return
+    /// First start of the stream after app open: where the user is (once). The place line is said after the
+    /// request recorded with it has been handled.
+    mutating func checkPlaceOnFirstStart() {
+        guard state.placeOverride == nil, state.placeDecidedAt == nil, state.placeCheck == nil else { return }
+        state.openingPending = true                        // say the place line once it's decided
+        if state.onlineHelp {
+            requestPlaceCheck()
+        } else {
+            placeDecided(.general, line: SessionPhrases.couldntTellPlace)   // no Gemini: general
         }
-        if state.step == .asking {                             // the new recording replaces the pending question
-            state.askStartedAt = nil
-            resumePausedStep()
+    }
+
+    /// Volume down / the stop button (owner decision): the stream ends at once. Recording is discarded, speech and
+    /// prompts stop, perception and danger stop (runner), and the item and list are cleared. Silent.
+    mutating func stopStream() {
+        guard state.streaming || state.isListening else { return }
+        if state.isListening { out.append(.cancelListening) }
+        state.isListening = false
+        state.streaming = false
+        state.goal = nil
+        state.queue = []
+        state.destination = nil
+        state.pendingChoice = nil
+        state.choiceAskedAt = nil
+        state.askingNext = false
+        state.askingNextAt = nil
+        state.assist = nil
+        state.askPending = false
+        state.held = []
+        state.placeCheck = nil
+        state.openingPending = false
+        state.pendingPlaceLine = nil
+        state.loadingGoal = false
+        state.dangerSince = nil
+        state.goalEpoch += 1
+        out.append(.setTarget(nil, candidates: [], destination: nil))
+        out.append(.setStreaming(false))
+        enter(.idle)
+    }
+
+    /// Volume up / record button: only starts a recording (ignored while one runs). Volume down ends it (§5.10).
+    mutating func talkPressed() {
+        guard !state.isListening else { return }
+        if !state.streaming {                                  // volume up when stopped: the stream starts
+            state.streaming = true
+            out.append(.setStreaming(true))
+        }
+        if state.askPending {                                  // the new recording replaces the pending request
+            state.assist = nil
+            state.askPending = false
+            emitWork()
         }
         out.append(.stopSpeech)
-        listen(SessionTuning.talkSeconds)
+        listen()
+        checkPlaceOnFirstStart()
     }
 
-    mutating func listen(_ seconds: Double) {
-        out.append(.listen(maxSeconds: seconds))
+    /// Records until volume down: no silence end, no time limit.
+    mutating func listen() {
+        state.listenStartedAt = state.now
+        out.append(.listen)
         state.isListening = true
-        state.listenDeadline = state.now + seconds + SessionTuning.listenSlack
     }
 
     mutating func recordingEnded() {
         state.isListening = false
-        state.listenDeadline = nil
-        if state.step == .paused, state.pauseReason == .lost {
-            resumePausedStep()
+        if state.pause == .lost {
+            state.pause = nil
+            emitWork()
             noteEvidence()
         }
     }
 
     /// Every recording ends with resume + recalculate (§5.10).
     mutating func afterRecording() {
+        if let line = state.pendingPlaceLine {                 // the place line follows the user's request
+            state.pendingPlaceLine = nil
+            announce(line)
+        }
         replayHeld()
         recalculate()
     }
@@ -202,81 +303,78 @@ extension ShoppingSession {
         emitWork()
     }
 
-    mutating func resumePausedStep() {
-        var s = state.resumeStep ?? (hasActiveGoal ? .findingSignage : .idle)
-        if s == .asking || s == .paused { s = .idle }
-        state.step = s
-        state.resumeStep = nil
-        state.pauseReason = nil
-        emitWork()
-    }
-
     mutating func noteEvidence() {
         state.progress.evidenceAt = state.now
         state.progress.lostTrackAt = nil
     }
 }
 
-// MARK: - Steps and stream work (§3.6)
+// MARK: - Phases and stream work (§3.6)
 
 extension ShoppingSession {
+    /// Phase change. Silent: the caller speaks only when the user must act.
     mutating func enter(_ s: Step) {
         state.step = s
         state.stepStartedAt = state.now
         state.marks = SessionStepMarks(anchor: state.now)
+        state.pendingPick = nil
+        state.vote = nil
+        if s != .findAisle { state.aisleBearing = nil }
         switch s {
-        case .walkingAisle, .pointing, .holdUpToCheck:
+        case .inAisle, .pick, .confirm:
             if let c = state.goal?.category { state.currentAisle = c }
             if state.progress.aisleEnteredAt == nil {
                 state.progress.aisleEnteredAt = state.now
                 markAisleEntry()
             }
-        case .findingEntrance, .findingSignage, .shelfVote, .findingDestination, .sessionDone, .idle:
+        case .entrance, .findAisle:
             state.currentAisle = nil
-        default:
-            break
+        case .idle:
+            break                                           // "What's next?" at the shelf keeps the aisle
         }
         emitWork()
     }
 
-    mutating func enterPointing(prompt: Bool) {
-        enter(.pointing)
-        if prompt { announce(SessionPhrases.pointAtShelf) }
+    /// Item search phase for the current goal or destination.
+    mutating func enterFindAisle() {
+        enter(.findAisle)
+        state.itemSeenAt = nil
+        state.itemClock = nil
+        state.itemDistance = nil
+        if state.goal != nil && isGeneral { guide(SessionPhrases.turnSlowly) }
     }
 
     mutating func markAisleEntry() {
         state.progress.entryYaw = state.yaw
         state.progress.entrySteps = state.steps
-        state.progress.turnBackSteps = nil
     }
 
     mutating func emitWork() {
-        let w = work(for: state.step)
+        let w = currentWork()
         if state.work != w {
             state.work = w
             out.append(.setWork(w))
         }
     }
 
-    /// shelfMode is on from "Turn to the shelf" through pointing and hold-up (§5.3), and stays on while asking about the held item.
-    func work(for step: Step) -> StreamWork {
+    /// Perception work per phase: Entrance / FindAisle / InAisle read signs (and look for the item), Pick points,
+    /// Confirm reads the held item. Overlays (Ask pending, paused) turn the camera work off. Nothing here affects
+    /// obstacle alerts: those follow the motion state only.
+    func currentWork() -> StreamWork {
         var w: StreamWork
-        switch step {
-        case .findingEntrance, .findingSignage, .walkingAisle, .shelfVote, .findingDestination:
-            w = StreamWork(text: .fast, yoloFPS: 10)
-        case .pointing:
-            w = StreamWork(text: .fast, hands: true, yoloFPS: 10, shelfMode: true)
-        case .holdUpToCheck:
-            w = StreamWork(text: .accurate, barcodes: true, yoloFPS: 10, shelfMode: true)
-        case .asking:
-            let paused = state.resumeStep.flatMap { $0 == .asking ? nil : $0 } ?? .idle
-            w = StreamWork(text: .off, yoloFPS: 10, shelfMode: work(for: paused).shelfMode)
-        case .idle, .askingGoal, .sessionDone, .paused:
+        if state.pause != nil || state.askPending {
             w = StreamWork(text: .off, yoloFPS: 10)
+        } else {
+            switch state.step {
+            case .entrance, .findAisle, .inAisle: w = StreamWork(text: .fast, yoloFPS: 10)
+            case .pick: w = StreamWork(text: .fast, hands: true, yoloFPS: 10)
+            case .confirm: w = StreamWork(text: .accurate, barcodes: true, yoloFPS: 10)
+            case .idle: w = StreamWork(text: .off, yoloFPS: 10)
+            }
         }
         switch state.thermal {
         case .serious: w.yoloFPS = 5                                        // YOLO first, then OCR; danger last
-        case .critical: w = StreamWork(text: .off, yoloFPS: 5, shelfMode: w.shelfMode)   // danger + stairs only
+        case .critical: w = StreamWork(text: .off, yoloFPS: 5)              // danger + stairs only
         case .nominal, .fair: break
         }
         return w

@@ -4,11 +4,9 @@ import CoreVideo
 import Foundation
 import simd
 
-/// Stream B video delegate (own serial queue): rate cap, intrinsics, and fan-out to `streamB` and extra
-/// subscribers, each `bufferingNewest(1)` so a slow consumer only ever sees the latest frame.
+/// Stream B video delegate (own serial queue): rate cap, intrinsics, and fan-out to every `makeStream()`
+/// subscriber, each `bufferingNewest(1)` so a slow consumer only ever sees the latest frame.
 final class CaptureStreamBRelay: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
-    let stream: AsyncStream<FrameB>
-    private let continuation: AsyncStream<FrameB>.Continuation
     private let calibration: CaptureCalibration
     private let lock = NSLock()
     private var extras: [UUID: AsyncStream<FrameB>.Continuation] = [:]
@@ -18,12 +16,10 @@ final class CaptureStreamBRelay: NSObject, AVCaptureVideoDataOutputSampleBufferD
 
     init(calibration: CaptureCalibration) {
         self.calibration = calibration
-        (stream, continuation) = AsyncStream.makeStream(of: FrameB.self, bufferingPolicy: .bufferingNewest(1))
         super.init()
     }
 
     deinit {
-        continuation.finish()
         extras.values.forEach { $0.finish() }
     }
 
@@ -56,7 +52,6 @@ final class CaptureStreamBRelay: NSObject, AVCaptureVideoDataOutputSampleBufferD
             calibration.update(K, width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
         }
         let frame = FrameB(pixelBuffer: pixelBuffer, intrinsics: K, time: time)
-        continuation.yield(frame)
         for c in targets { c.yield(frame) }
     }
 

@@ -3,13 +3,29 @@ import XCTest
 @testable import DigiFinderCore
 
 final class SessionSafetyTests: XCTestCase {
-    func testTalkAndDonePresses() {
+    /// Owner decision: volume up starts a recording (it ends on silence, in the runner); volume down / stop ends the
+    /// whole stream at once — recording discarded, item and list cleared, nothing spoken.
+    func testTalkAndStop() {
         var h = SessionHarness()
-        h.send(.notUnderstood(noisy: false))                       // end the opening recording
-        XCTAssertEqual(h.send(.donePressed), [], "ignored when not listening")
-        XCTAssertEqual(h.send(.talkPressed), [.stopSpeech, .listen(maxSeconds: 10)])
-        XCTAssertEqual(h.send(.talkPressed), [.finishListening], "pressed again = done")
-        XCTAssertEqual(h.send(.donePressed), [.finishListening])
+        h.startGoal(SessionFixtures.coffee)
+        h.send(.routed(.product(SessionFixtures.milk, .unspecified)))
+        XCTAssertEqual(h.send(.talkPressed), [.stopSpeech, .listen])
+        XCTAssertEqual(h.send(.talkPressed), [], "ignored while recording")
+        let stop = h.send(.donePressed)
+        XCTAssertTrue(stop.contains(.cancelListening))
+        XCTAssertTrue(stop.contains(.setStreaming(false)))
+        XCTAssertEqual(said(stop), [], "stopping is silent")
+        XCTAssertFalse(h.state.isListening)
+        XCTAssertFalse(h.state.streaming)
+        XCTAssertNil(h.state.goal)
+        XCTAssertEqual(h.state.queue, [])
+        XCTAssertEqual(h.state.step, .idle)
+        XCTAssertEqual(said(h.advance(30)), [], "no prompts or timers while stopped")
+        XCTAssertEqual(said(h.send(.signs([SessionFixtures.coffeeSign]))), [])
+        XCTAssertEqual(h.send(.donePressed), [], "stop again: nothing")
+        let start = h.send(.talkPressed)
+        XCTAssertEqual(start, [.setStreaming(true), .stopSpeech, .listen], "volume up restarts the stream and records")
+        XCTAssertTrue(h.state.streaming)
     }
 
     func testDangerCutsTheRecordingAndAsksAgain() {
@@ -17,9 +33,10 @@ final class SessionSafetyTests: XCTestCase {
         h.startGoal(SessionFixtures.coffee)
         h.send(.talkPressed)
         let e = h.send(.danger(cutRecording: true))
-        XCTAssertEqual(e, [.say("Say that again.", .reply), .listen(maxSeconds: 5)])
-        XCTAssertTrue(h.state.isListening)
-        XCTAssertEqual(said(h.send(.routed(.product(SessionFixtures.milk, .add)))), ["Added milk to the list."])
+        XCTAssertEqual(e, [.say("Say that again.", .reply)], "no auto-recording: volume up to answer")
+        XCTAssertFalse(h.state.isListening)
+        h.send(.talkPressed)
+        XCTAssertEqual(said(h.send(.routed(.product(SessionFixtures.milk, .add)))), ["Okay, milk instead."])
     }
 
     func testGuidanceQuietDuringDangerThenRecalculates() {
@@ -59,7 +76,7 @@ final class SessionSafetyTests: XCTestCase {
         h.send(.talkPressed)
         let e = h.send(.stairs(StairsObservation(up: false, distance: 2, steps: 4)))
         XCTAssertEqual(e, [.cancelListening, .say("Stairs going down, about 4 steps, 2 meters, 12 o'clock.", .stairs),
-                           .say("Say that again.", .reply), .listen(maxSeconds: 5)])
+                           .say("Say that again.", .reply)])
     }
 
     func testNewStaircaseAfterAWhile() {
@@ -73,9 +90,13 @@ final class SessionSafetyTests: XCTestCase {
     func testPositioningPrompts() {
         var h = SessionHarness()
         h.startGoal(SessionFixtures.coffee)
-        XCTAssertEqual(said(h.send(.positioning(.tiltUp))), ["Tilt the phone up."])
-        XCTAssertEqual(said(h.send(.positioning(.tiltUp))), [], "rate limited")
-        XCTAssertEqual(said(h.send(.positioning(.pointInFront))), [], "only while pointing")
+        XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), [], "standing still: flipped stays quiet")
+        h.send(.motion(yawDegrees: 0, steps: 2, walking: true))
+        XCTAssertEqual(said(h.send(.positioning(.tiltUp))), [], "never: lanyard")
+        XCTAssertEqual(said(h.send(.positioning(.tiltDown))), [])
+        XCTAssertEqual(said(h.send(.positioning(.slowDown))), ["Slow down."])
+        XCTAssertEqual(said(h.send(.positioning(.slowDown))), [], "rate limited")
+        XCTAssertEqual(said(h.send(.positioning(.pointInFront))), [], "only in Pick")
         XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), ["Phone may be flipped around."])
         h.advance(10)
         XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), [], "max once per 30 s")
@@ -84,24 +105,69 @@ final class SessionSafetyTests: XCTestCase {
         XCTAssertEqual(said(h.send(.positioning(.tooDark))), ["It's too dark for me to read here."])
     }
 
-    func testShelfModeSilencesTheFlippedCheck() {
+    func testStandingAtTheShelfSilencesTheFlippedCheck() {
         var h = SessionHarness()
         h.reachShelf()
-        XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), [])
+        XCTAssertEqual(said(h.send(.positioning(.phoneFlipped))), [], "standing: Safety doesn't check, the session ignores it")
         XCTAssertEqual(said(h.send(.positioning(.pointInFront))), ["Point in front of the phone, at chest height."])
         XCTAssertEqual(said(h.send(.positioning(.stepBack))), ["Step back a little."])
     }
 
-    func testStreamWorkPerStep() {
+    /// Perception work per phase. StreamWork carries no alert flag: alerts follow the motion state only.
+    func testStreamWorkPerPhase() {
         var h = SessionHarness()
         XCTAssertEqual(h.state.work, StreamWork(text: .off, yoloFPS: 10))
         h.startGoal(SessionFixtures.coffee)
         XCTAssertEqual(h.state.work, SessionFixtures.signageWork)
-        h.send(.signs([SessionFixtures.coffeeSign]), .arrivedAtAisle(clock: 9))
-        XCTAssertEqual(h.state.work?.shelfMode, false, "walking the aisle is not shelf mode")
-        h.send(.motion(yawDegrees: -90, steps: 0, walking: true), .signs([SessionFixtures.shelfSign]))
+        h.send(.signs([SessionFixtures.coffeeSign]), .arrivedAtAisle(clock: 9), .motion(yawDegrees: -90, steps: 0, walking: true))
+        XCTAssertEqual(h.state.step, .inAisle)
+        XCTAssertEqual(h.state.work, SessionFixtures.signageWork)
+        h.send(.signs([SessionFixtures.shelfSign]), .motion(yawDegrees: -90, steps: 2, walking: false))
         XCTAssertEqual(h.state.work, SessionFixtures.pointingWork)
         h.grab()
         XCTAssertEqual(h.state.work, SessionFixtures.holdUpWork)
+    }
+
+    /// Nothing in Core gates alerts by phase: a danger is handled the same way in every phase and overlay.
+    func testDangerHandlingIsTheSameInEveryPhase() {
+        func check(_ h: inout SessionHarness, _ label: String) {
+            XCTAssertEqual(h.send(.danger(cutRecording: false)), [], label)
+            XCTAssertNotNil(h.state.dangerSince, label)
+            h.send(.dangerCleared)
+            XCTAssertNil(h.state.dangerSince, label)
+        }
+        var h = SessionHarness(online: true)
+        check(&h, "idle")
+        h.enterAisle()
+        check(&h, "in aisle")
+        h.send(.signs([SessionFixtures.shelfSign]), .motion(yawDegrees: -90, steps: 2, walking: false))
+        XCTAssertEqual(h.state.step, .pick)
+        h.send(.danger(cutRecording: false))
+        XCTAssertNotNil(h.state.dangerSince, "pick")
+        h.send(.dangerCleared)
+        h.grab()
+        check(&h, "confirm")
+        h.send(.routed(.question("is this decaf")))
+        XCTAssertTrue(h.state.askPending)
+        check(&h, "ask pending")
+    }
+
+    /// A cancelled recording (no transcript) must not leave the session "recording": volume up works again.
+    func testCancelledRecordingDoesNotBlockVolumeUp() {
+        var h = SessionHarness()
+        XCTAssertTrue(h.send(.talkPressed).contains(.listen))
+        XCTAssertEqual(said(h.send(.recordingCancelled)), [], "silent")
+        XCTAssertFalse(h.state.isListening)
+        XCTAssertTrue(h.send(.talkPressed).contains(.listen))
+    }
+
+    /// Safety net: a recording nobody answered is cleared after ~30 s.
+    func testStuckRecordingIsCleared() {
+        var h = SessionHarness()
+        h.send(.talkPressed)
+        let e = h.advance(31)
+        XCTAssertTrue(e.contains(.cancelListening))
+        XCTAssertFalse(h.state.isListening)
+        XCTAssertTrue(h.send(.talkPressed).contains(.listen))
     }
 }

@@ -73,18 +73,33 @@ final class FeedbackAudioSession {
     func beginListening(record: Bool, maxWait: Double = 3) async -> Bool {
         let output = currentOutput
         if let output { await output.waitUntilQuiet(maxWait: maxWait) }
-        output?.setMicOpen(true)
-        let ok = record ? enterListening() : true
+        // Category / activation changes can block for a second or more: never on the caller's (often main) thread.
+        let ok: Bool = await onSwitchQueue {
+            output?.setMicOpen(true)
+            return record ? self.enterListening() : true
+        }
         if let output { await output.playTone(.beep) }
-        if !ok { output?.setMicOpen(false) }
+        if !ok { await onSwitchQueue { output?.setMicOpen(false) } }
         return ok
     }
 
     /// After a recording: re-opens speech output (held lines play) and goes back to `.playback` if nothing speaks.
+    /// Returns at once; the switch runs on the same serial queue as `beginListening`, so the order is kept.
     func endListening() {
         let output = currentOutput
-        output?.setMicOpen(false)
-        if !(output?.isSpeaking ?? false) { enterSpeaking() }
+        switchQueue.async {
+            output?.setMicOpen(false)
+            if !(output?.isSpeaking ?? false) { self.enterSpeaking() }
+        }
+    }
+
+    /// Serial queue for speak ↔ listen switches (AVAudioSession calls are slow and must not block the UI).
+    private let switchQueue = DispatchQueue(label: "feedback.audio.switch", qos: .userInitiated)
+
+    private func onSwitchQueue<T>(_ work: @escaping () -> T) async -> T {
+        await withCheckedContinuation { (c: CheckedContinuation<T, Never>) in
+            switchQueue.async { c.resume(returning: work()) }
+        }
     }
 
     private func enterListening() -> Bool {
@@ -92,6 +107,8 @@ final class FeedbackAudioSession {
         do {
             let s = AVAudioSession.sharedInstance()
             try s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
+            // iOS mutes haptics while recording by default; danger must still vibrate mid-sentence (§5.3, §5.17).
+            try? s.setAllowHapticsAndSystemSoundsDuringRecording(true)
             try s.setActive(true)
             mode = .listening
             active = true

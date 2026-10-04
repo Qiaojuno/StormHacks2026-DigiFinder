@@ -14,6 +14,9 @@ struct PerceptionDebugSnapshot {
     var pointedSpot: NormPoint?
     var pointedRegion: NormRect?
     var targetRegion: NormRect?
+    /// Gemini item finder box being tracked (Vision), and the tracker's confidence.
+    var trackedBox: NormRect?
+    var trackConfidence: Float = 0
     var doors: [DoorObservation] = []
     var isOutside = false
     var yoloFPS: Double = 0

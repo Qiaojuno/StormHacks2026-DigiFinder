@@ -46,6 +46,10 @@ struct UISettings: Codable, Equatable {
     var dangerHapticsEnabled = true
     var detail: Verbosity = .normal
     var hasHeardWalkthrough = false
+    /// Nearby mode: look around for the item itself (home, a room), no signs or aisles.
+    var nearbyMode = false
+    /// The phone hangs upside down on the lanyard (flip-camera button).
+    var cameraUpsideDown = false
 
     init() {}
 
@@ -60,6 +64,8 @@ struct UISettings: Codable, Equatable {
         dangerHapticsEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .dangerHapticsEnabled)) ?? d.dangerHapticsEnabled
         detail = (try? c.decodeIfPresent(Verbosity.self, forKey: .detail)) ?? d.detail
         hasHeardWalkthrough = (try? c.decodeIfPresent(Bool.self, forKey: .hasHeardWalkthrough)) ?? d.hasHeardWalkthrough
+        nearbyMode = (try? c.decodeIfPresent(Bool.self, forKey: .nearbyMode)) ?? d.nearbyMode
+        cameraUpsideDown = (try? c.decodeIfPresent(Bool.self, forKey: .cameraUpsideDown)) ?? d.cameraUpsideDown
     }
 }
 

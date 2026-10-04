@@ -1,121 +1,155 @@
 import SwiftUI
 
-/// MVP screen (§6): step, last spoken line, TALK, hint, status chips, SETUP and DEBUG.
+/// The app's one screen: the live 0.5× view fills the background, a record button sits at the bottom with Home
+/// (left) and Settings (right) under it. Settings replaces the camera view with the setup page.
 /// Speech already reaches VoiceOver through the feedback service, so nothing here posts announcements.
 struct MainView: View {
     @Bindable var model: AppViewModel
+    @State private var showDebug = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            AccessibleSurface(
-                items: surfaceItems,
-                isEnabled: !model.isWalking,
-                onHear: { model.hear($0.spoken) },
-                onActivate: activate)
-                .frame(maxHeight: model.status.cameraAvailable ? .infinity : nil)
-                .fixedSize(horizontal: false, vertical: !model.status.cameraAvailable)
-
-            if !model.status.cameraAvailable {
-                CameraUnavailableView(debug: model.debug, showsDebugPanel: model.isSimulator,
-                                      isWalking: model.isWalking)
-                    .frame(maxHeight: .infinity)
+        ZStack {
+            UITheme.background.ignoresSafeArea()
+            switch model.page {
+            case .home: home
+            case .settings: SetupView(model: model)
             }
-
-            controls
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(UITheme.background.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom, spacing: 0) { controls }
+        .overlay(alignment: .topTrailing) {
+            if model.page == .home { debugButton }
+        }
+        .overlay(alignment: .topLeading) {
+            if model.page == .home { flipButton }
+        }
+        .alert(model.isCameraFlipped ? "Turn the camera back to normal?" : "Flip the camera?",
+               isPresented: $model.showFlipConfirm) {
+            Button("Cancel", role: .cancel) { model.cancelFlip() }
+            Button("Confirm") { model.confirmFlip() }
+        } message: {
+            Text(model.isCameraFlipped ? "Use this if the phone now hangs right side up."
+                                       : "Use this if the phone hangs upside down on the lanyard.")
+        }
+        .fullScreenCover(isPresented: $showDebug) { DebugOverlayView(model: model) }
         .foregroundStyle(UITheme.foreground)
         .background(CaptureEventView(onTalk: { model.volumeUp() }, onDone: { model.volumeDown() }))
         .onAppear { model.onAppear() }
         .task {
-            // Status chips: capabilities and connectivity change without a session update.
+            // Camera availability can change after start (permission answer, configuration).
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 model.refreshStatus()
             }
         }
-        .sheet(isPresented: $model.showSetup) {
-            SetupView(model: model)
-        }
-        .fullScreenCover(isPresented: $model.showDebug) {
-            DebugOverlayView(model: model)
-        }
-    }
-
-    private var controls: some View {
-        VStack(spacing: 12) {
-            Button(action: model.talkTapped) {
-                Text("TALK")
-                    .font(.largeTitle.weight(.heavy))
-            }
-            .buttonStyle(UILargeButtonStyle(filled: true, minHeight: 120))
-            .accessibilityLabel("Talk")
-            .accessibilityHint(model.isWalking
-                ? "Ignored while walking. Use volume up."
-                : "Same as volume up. Then speak, and press volume down when done.")
-
-            Text(model.isWalking ? "Walking: use volume ↑ to talk" : model.hint)
-                .font(.headline)
-                .foregroundStyle(UITheme.secondary)
-                .frame(maxWidth: .infinity)
-                .accessibilityLabel(model.isWalking
-                    ? "Walking. Use volume up to talk."
-                    : "Volume up to talk. Volume down when done.")
-
-            chips
-
-            HStack(spacing: 12) {
-                Button(action: model.openSetup) {
-                    Text("SETUP").font(.title3.bold())
-                }
-                .accessibilityLabel("Setup")
-                .accessibilityHint("Speech, units, tones, detail level and the walkthrough.")
-
-                Button(action: model.openDebug) {
-                    Text("DEBUG").font(.title3.bold())
-                }
-                .accessibilityLabel("Debug")
-                .accessibilityHint("Camera preview, depth and test events.")
-            }
-            .buttonStyle(UILargeButtonStyle())
-            .disabled(model.isWalking)
-        }
-    }
-
-    private var chips: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { chipViews }
-            VStack(alignment: .leading, spacing: 6) { chipViews }
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Status")
     }
 
     @ViewBuilder
-    private var chipViews: some View {
-        UIStatusChip(title: "LiDAR", isOn: model.status.hasLiDAR)
-        UIStatusChip(title: "Offline DB", isOn: model.status.hasOfflineDatabase)
-        UIStatusChip(title: "Online", isOn: model.status.isOnline)
-    }
-
-    private var surfaceItems: [AccessibleSurfaceItem] {
-        [
-            AccessibleSurfaceItem(id: "step", text: model.stepTitle, spoken: model.stepTitle,
-                                  actionHint: "Double tap to talk.", style: .title, isHeader: true),
-            AccessibleSurfaceItem(id: "message", text: model.lastMessage,
-                                  spoken: model.lastMessage.isEmpty ? "Nothing spoken yet." : model.lastMessage,
-                                  actionHint: "Double tap to repeat.", style: .message),
-        ]
-    }
-
-    private func activate(_ item: AccessibleSurfaceItem) {
-        switch item.id {
-        case "step": model.talkTapped()
-        case "message": model.repeatLast()
-        default: break
+    private var home: some View {
+        if model.status.cameraAvailable {
+            UICameraPreview(attach: model.attachPreview)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        } else {
+            CameraUnavailableView(debug: model.debug, showsDebugPanel: model.isSimulator, isWalking: model.isWalking)
+                .padding(16)
+                .padding(.top, 44)                           // room for the Debug button
         }
+    }
+
+    /// Flip the camera for lanyards that hang the phone upside down (always confirmed, read aloud).
+    private var flipButton: some View {
+        Button(action: model.flipTapped) {
+            Label(model.isCameraFlipped ? "Flipped" : "Flip", systemImage: "arrow.triangle.2.circlepath.camera.fill")
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(Capsule().fill(.black.opacity(0.55)))
+        }
+        .foregroundStyle(model.isCameraFlipped ? UITheme.accent : UITheme.foreground)
+        .disabled(model.isWalking)
+        .padding(.leading, 16)
+        .padding(.top, 8)
+        .accessibilityLabel(model.isCameraFlipped ? "Camera flipped" : "Flip camera")
+        .accessibilityHint("Use if the phone hangs upside down. Asks to confirm.")
+    }
+
+    /// Judges' debug overlay (camera, depth, detections, threat reasons, test events).
+    private var debugButton: some View {
+        Button { showDebug = true } label: {
+            Label("Debug", systemImage: "ladybug.fill")
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(Capsule().fill(.black.opacity(0.55)))
+        }
+        .foregroundStyle(UITheme.foreground)
+        .disabled(model.isWalking)
+        .padding(.trailing, 16)
+        .padding(.top, 8)
+        .accessibilityHint("Camera preview, depth, detections and test events.")
+    }
+
+    private var controls: some View {
+        VStack(spacing: 16) {
+            // Always usable, walking or not (owner decision): start and stop never depend on the motion guess.
+            UIRecordButton(isRecording: model.isStreaming || model.isRecording, isEnabled: true, action: model.recordTapped)
+            HStack {
+                pageButton("Home", systemImage: "house.fill", page: .home, action: model.openHome)
+                Spacer()
+                pageButton("Settings", systemImage: "gearshape.fill", page: .settings, action: model.openSettings)
+                    .disabled(model.isWalking)
+            }
+            .padding(.horizontal, 24)
+        }
+        .padding(.top, 16)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            LinearGradient(colors: [.black.opacity(0), .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea(edges: .bottom))
+    }
+
+    private func pageButton(_ title: String, systemImage: String, page: UIPage, action: @escaping () -> Void) -> some View {
+        let selected = model.page == page
+        return Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage).font(.title2)
+                Text(title).font(.footnote.weight(.semibold))
+            }
+            .frame(minWidth: UITheme.minTarget, minHeight: UITheme.minTarget)
+            .foregroundStyle(selected ? UITheme.accent : UITheme.foreground)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Camera-app style record button: a red circle in a white ring; while recording, a red rounded square.
+struct UIRecordButton: View {
+    let isRecording: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white, lineWidth: 6)
+                    .frame(width: 84, height: 84)
+                RoundedRectangle(cornerRadius: isRecording ? 8 : 35)
+                    .fill(Color.red)
+                    .frame(width: isRecording ? 36 : 70, height: isRecording ? 36 : 70)
+            }
+            .frame(width: 96, height: 96)
+            .contentShape(Circle())
+            .animation(.easeInOut(duration: 0.2), value: isRecording)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.5)
+        .accessibilityLabel(isRecording ? "Stop" : "Start")
+        .accessibilityHint(isRecording ? "Same as volume down: stops everything."
+                                       : "Same as volume up. Then say what you're looking for.")
     }
 }

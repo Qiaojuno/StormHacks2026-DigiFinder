@@ -42,6 +42,9 @@ final class MultiCamService: CaptureSessionSource, @unchecked Sendable {
         }
 
         let session = AVCaptureMultiCamSession()
+        // The app's audio session belongs to speech + recording (FeedbackAudioSession). If capture managed it too,
+        // switching to record mode would interrupt the camera (frozen preview while the user talks).
+        session.automaticallyConfiguresApplicationAudioSession = false
         let videoA = AVCaptureVideoDataOutput()     // 1×: debug only
         let depthA = AVCaptureDepthDataOutput()     // LiDAR distances
         let videoB = AVCaptureVideoDataOutput()     // ultra-wide: all vision

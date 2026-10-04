@@ -40,7 +40,7 @@ enum PerceptionImageTools {
 
     /// Upright crop of a Stream B frame (sensor buffer turned `.right`) for a contract-space rect, padded a little.
     static func uprightCrop(_ pb: CVPixelBuffer, rect r: NormRect, pad: Double = 0.02, maxWidth: CGFloat = 400) -> CGImage? {
-        let image = CIImage(cvPixelBuffer: pb).oriented(.right)
+        let image = CIImage(cvPixelBuffer: pb).oriented(CaptureOrientation.visionOrientation)
         return crop(image, rect: r, pad: pad, maxWidth: maxWidth)
     }
 

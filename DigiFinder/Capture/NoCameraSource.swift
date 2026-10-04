@@ -1,11 +1,11 @@
+import AVFoundation
 import CoreGraphics
 import Foundation
 import DigiFinderCore
 
 /// Simulator / no camera: "Camera unavailable". Never yields frames, never calls `onDepth`.
-final class NoCameraSource: FrameSource, CaptureControl, @unchecked Sendable {
+final class NoCameraSource: FrameSource, @unchecked Sendable {
     let capabilities = CaptureCapabilities()
-    let streamB: AsyncStream<FrameB>
     var onDepth: ((DepthFrame) -> Void)?
     var onCapabilitiesChange: ((CaptureCapabilities) -> Void)?
     var debugOverlayEnabled = false
@@ -18,12 +18,11 @@ final class NoCameraSource: FrameSource, CaptureControl, @unchecked Sendable {
 
     init(reason: String = "No camera") {
         self.reason = reason
-        let (stream, continuation) = AsyncStream.makeStream(of: FrameB.self, bufferingPolicy: .bufferingNewest(1))
-        streamB = stream
-        continuations = [continuation]
     }
 
     deinit { continuations.forEach { $0.finish() } }
+
+    func attachPreview(_ layer: AVCaptureVideoPreviewLayer) {}
 
     func captureStill() async throws -> CGImage { throw CaptureError.unavailable }
     func start() throws {}
@@ -32,6 +31,7 @@ final class NoCameraSource: FrameSource, CaptureControl, @unchecked Sendable {
     func setThermalLevel(_ level: ThermalLevel) {}
     func setRates(_ rates: CaptureRates) {}
     var rates: CaptureRates { .full }
+    var streamBCalibration: CaptureCalibration.StreamB? { nil }
 
     func makeStreamB() -> AsyncStream<FrameB> {
         let (stream, continuation) = AsyncStream.makeStream(of: FrameB.self, bufferingPolicy: .bufferingNewest(1))

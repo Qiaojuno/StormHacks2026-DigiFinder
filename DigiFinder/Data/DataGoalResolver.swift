@@ -74,10 +74,34 @@ final class DataGoalResolver {
     /// Also [] for a leading "no" that isn't part of a brand ("no milk") and for "x and y" that isn't a known
     /// compound, so the router drops the "no" or splits the phrase (§5.2 rule 3).
     func goals(for query: String) -> [Goal] {
+        let grocery = groceryGoals(for: query)
+        // Household objects (owner decision): "my phone", "the remote", "mug" → found by their camera class.
+        // An exact household word wins, keeping a database aisle when there is one ("bottle" in a store).
+        let stripped = Self.words(query).drop { ["my", "the", "a", "an"].contains($0) }.joined(separator: " ")
+        if let cls = MatchingHousehold.classes[stripped] {
+            return [Goal(product: stripped, category: grocery.first?.category, visualClass: cls)]
+        }
+        if var g = grocery.first {
+            if g.visualClass == nil { g.visualClass = groceryClass(for: g) }
+            return [g] + grocery.dropFirst()
+        }
+        if let cls = MatchingHousehold.visualClass(for: query) { return [Goal(product: stripped, visualClass: cls)] }
+        return []
+    }
+
+    private func groceryGoals(for query: String) -> [Goal] {
         let words = Self.words(query)
         guard !words.isEmpty, let parsed = parse(words, strict: true) else { return [] }
         guard let match = findMatch(parsed, aisle: nil, limit: Self.aisleVoteSample) else { return catalogFallback(words) }
         return [goal(words: words, parsed: parsed, match: match)]
+    }
+
+    /// A catalog visual class named like the product ("banana" → "Banana", "milk" → "Milk"), if any.
+    private func groceryClass(for g: Goal) -> String? {
+        let product = normalizeText(g.product)
+        let classes = catalog.aisles.values.flatMap(\.visualClasses)
+        return classes.first { normalizeText($0) == product }
+            ?? classes.first { c in product.split(separator: " ").last.map { normalizeText(c) == String($0) } ?? false }
     }
 
     /// Products in the goal's aisle matching the user's words (hand-added products first). [] without a category

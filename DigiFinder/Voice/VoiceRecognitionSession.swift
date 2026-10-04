@@ -3,13 +3,15 @@ import Foundation
 import Speech
 
 /// One recording: mic → `SFSpeechAudioBufferRecognitionRequest` (on-device when supported).
-/// Ends on `finish()` (volume down), ~1.5 s without new words after speech started, no speech within the grace
-/// period, or `maxSeconds`. `cancel()` ends with `.cancelled`. Tracks the input level for "It's noisy here".
+/// Ends on silence like Siri (owner decision): ~1.5 s after the last new word, or ~6 s if nothing is said.
+/// `cancel()` ends with `.cancelled` (stop: volume down / the stop button, danger alert, stairs line, backgrounding).
+/// `finish()` ends it now and keeps what was said (used by nothing user-facing today). Tracks the input level for
+/// "It's noisy here".
 /// The audio session must already be in `.playAndRecord` (FeedbackAudioSession.beginListening).
 final class VoiceRecognitionSession: @unchecked Sendable {
-    /// Silence after the last new word that ends the recording.
+    /// Silence after the last new word that ends the recording (s).
     static let silenceSeconds = 1.5
-    /// Give up when nothing was said for this long (capped by maxSeconds).
+    /// Nothing said for this long: the recording ends empty (s).
     static let noSpeechSeconds = 6.0
     /// After endAudio, how long to wait for the final transcription.
     static let finalWaitSeconds = 1.2
@@ -18,19 +20,18 @@ final class VoiceRecognitionSession: @unchecked Sendable {
 
     private let recognizer: SFSpeechRecognizer
     private let contextualStrings: [String]
-    private let maxSeconds: Double
     private let queue = DispatchQueue(label: "voice.recognition")
 
     // Confined to `queue`.
     private let engine = AVAudioEngine()
     private let request = SFSpeechAudioBufferRecognitionRequest()
     private var task: SFSpeechRecognitionTask?
-    private var timer: DispatchSourceTimer?
     private var continuation: CheckedContinuation<VoiceResult, Never>?
     private var tapInstalled = false
     private var stopping = false
     private var done = false
     private var bestText = ""
+    private var timer: DispatchSourceTimer?
     private var startedAt: Double = 0
     private var lastWordAt: Double?
 
@@ -38,15 +39,16 @@ final class VoiceRecognitionSession: @unchecked Sendable {
     private let levelLock = NSLock()
     private var levels: [Float] = []
 
-    init(recognizer: SFSpeechRecognizer, contextualStrings: [String], maxSeconds: Double) {
+    init(recognizer: SFSpeechRecognizer, contextualStrings: [String]) {
         self.recognizer = recognizer
         self.contextualStrings = contextualStrings
-        self.maxSeconds = max(1, maxSeconds)
     }
 
     func run() async -> VoiceResult {
         await withCheckedContinuation { (c: CheckedContinuation<VoiceResult, Never>) in
             queue.async {
+                // cancel() may already have run (danger alert before the recording started): never open the mic.
+                if self.done { c.resume(returning: .cancelled); return }
                 self.continuation = c
                 self.start()
             }
@@ -77,14 +79,14 @@ final class VoiceRecognitionSession: @unchecked Sendable {
         guard format.sampleRate > 0, format.channelCount > 0 else { return complete(.empty(noisy: false)) }
         let request = self.request
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
             request.append(buffer)
-            self?.record(level: Self.level(of: buffer))
+            self.record(level: Self.level(of: buffer))
         }
         tapInstalled = true
         engine.prepare()
         do { try engine.start() } catch { return complete(.empty(noisy: false)) }
 
-        startedAt = Self.now()
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
@@ -92,12 +94,26 @@ final class VoiceRecognitionSession: @unchecked Sendable {
             self?.queue.async { self?.handle(text: text, isFinal: isFinal, failed: failed) }
         }
 
+        startedAt = Self.now()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.1, repeating: 0.1)
-        t.setEventHandler { [weak self] in self?.checkTime() }
+        t.setEventHandler { [weak self] in self?.checkSilence() }
         t.resume()
         timer = t
     }
+
+    /// Siri-style end: silence after speech, or nothing said at all.
+    private func checkSilence() {
+        guard !done, !stopping else { return }
+        let now = Self.now()
+        if let last = lastWordAt {
+            if now - last >= Self.silenceSeconds { beginStopping() }
+        } else if now - startedAt >= Self.noSpeechSeconds {
+            beginStopping()
+        }
+    }
+
+    private static func now() -> Double { ProcessInfo.processInfo.systemUptime }
 
     private func handle(text: String?, isFinal: Bool, failed: Bool) {
         guard !done else { return }
@@ -105,19 +121,8 @@ final class VoiceRecognitionSession: @unchecked Sendable {
             bestText = text
             lastWordAt = Self.now()
         }
+        // A final result before volume down (the recognizer ended on its own, or failed) ends the recording too.
         if isFinal || failed { complete(result()) }
-    }
-
-    private func checkTime() {
-        guard !done, !stopping else { return }
-        let now = Self.now()
-        let elapsed = now - startedAt
-        if elapsed >= maxSeconds { return beginStopping() }
-        if let last = lastWordAt {
-            if now - last >= Self.silenceSeconds { beginStopping() }
-        } else if elapsed >= min(Self.noSpeechSeconds, maxSeconds) {
-            beginStopping()
-        }
     }
 
     private func beginStopping() {
@@ -180,6 +185,4 @@ final class VoiceRecognitionSession: @unchecked Sendable {
         let rms = (sum / Float(n)).squareRoot()
         return rms > 0 ? 20 * log10(rms) : -160
     }
-
-    private static func now() -> Double { ProcessInfo.processInfo.systemUptime }
 }

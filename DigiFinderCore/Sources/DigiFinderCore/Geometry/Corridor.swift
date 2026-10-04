@@ -3,16 +3,13 @@
 /// Waist-to-head box ahead of the user, in leveled meters.
 public struct Corridor {
     public var halfWidth: Float = 0.4, below: Float = 0.4, above: Float = 0.6, maxForward: Float = 3
-    /// Points closer than this are ignored (0.2 m normally; ~0.7 m in shelf mode: the user's hand, the held item).
+    /// Points closer than this are ignored (0.2 m while walking; 0.8 m while standing: the user's hand, the held item).
     public var minForward: Float = 0.2
 
     public init(halfWidth: Float = 0.4, below: Float = 0.4, above: Float = 0.6, maxForward: Float = 3, minForward: Float = 0.2) {
         self.halfWidth = halfWidth; self.below = below; self.above = above; self.maxForward = maxForward
         self.minForward = minForward
     }
-
-    /// Shelf mode (§5.3): anything closer than ~0.7 m never alerts.
-    public static let shelf = Corridor(minForward: 0.7)
 
     public func contains(_ p: Vec3) -> Bool {
         abs(p.x) < halfWidth && p.y > -below && p.y < above && p.z > minForward && p.z < maxForward
@@ -61,15 +58,9 @@ public func corridorObstacle(_ pts: [Vec3], c: Corridor = .init(), minPoints: In
 /// Emergency: distance < 1.0 m and closing > 0.2 m/s, or TTC < 1.5 s with distance < 3 m.
 /// Never while rotating > 1.5 rad/s (lanyard swing); never when not closing (stationary rule).
 public func isEmergency(_ h: [(t: Double, d: Float)], rotationRate: Double) -> Bool {
-    isEmergency(h, rotationRate: rotationRate, shelfMode: false)
-}
-
-/// Shelf mode (§5.3): only things moving toward the user alert (TTC < 1.5 s), and nothing closer than ~0.7 m.
-public func isEmergency(_ h: [(t: Double, d: Float)], rotationRate: Double, shelfMode: Bool) -> Bool {
     guard rotationRate.isFinite, abs(rotationRate) < 1.5,
           let l = h.last, l.d.isFinite, let closing = closingSpeed(h) else { return false }
     guard closing > 0.2 else { return false }                  // stationary rule
     let ttc = l.d / closing
-    if shelfMode { return l.d >= Corridor.shelf.minForward && ttc < 1.5 }
     return l.d < 1.0 || (ttc < 1.5 && l.d < 3)
 }

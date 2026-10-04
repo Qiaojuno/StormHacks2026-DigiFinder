@@ -80,8 +80,15 @@ public struct SpeechPriorityQueue {
     }
 
     /// Next line to speak after the current one finishes; drops stale lower-priority lines.
+    /// Lines created with or after the line that just finished (below stairs) only waited for it to play, so they
+    /// aren't stale: "Got it: … Put it in your cart." is followed by "Next: milk." however long the first line took.
     public mutating func next(now: Double) -> SpeechLine? {
-        pending.removeAll { $0.priority < .stairs && now - $0.createdAt > staleAfter }
+        let chainedFrom = current.flatMap { $0.priority < .stairs ? $0.createdAt : nil }
+        pending.removeAll { line in
+            guard line.priority < .stairs, now - line.createdAt > staleAfter else { return false }
+            if let t = chainedFrom, line.createdAt >= t { return false }
+            return true
+        }
         current = pending.isEmpty ? nil : pending.removeFirst()
         if current?.priority == .narration && verbosity == .brief { return next(now: now) }
         return current

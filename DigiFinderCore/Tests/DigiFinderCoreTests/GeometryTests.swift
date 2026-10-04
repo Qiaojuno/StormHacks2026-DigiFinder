@@ -120,8 +120,10 @@ final class GeometryDangerTests: XCTestCase {
         XCTAssertEqual(o?.points.count, 50)
         XCTAssertEqual(o?.corridorCount, 150)
         XCTAssertEqual(nearestInCorridor(pts), 1.0)
-        XCTAssertNil(corridorObstacle(wall(z: 0.5), c: .shelf))        // hand / held item ignored at the shelf
-        XCTAssertEqual(corridorObstacle(wall(z: 0.5) + wall(z: 1.2), c: .shelf)?.distance, 1.2)
+        // Standing (the DangerDetector's corridor while not walking): hand / held item within 0.8 m ignored.
+        let standing = Corridor(minForward: ThreatTuning.stillMinDistance)
+        XCTAssertNil(corridorObstacle(wall(z: 0.5), c: standing))
+        XCTAssertEqual(corridorObstacle(wall(z: 0.5) + wall(z: 1.2), c: standing)?.distance, 1.2)
         XCTAssertNil(corridorObstacle(wall(z: 1, x: 1.0)))             // outside the corridor
         XCTAssertNil(corridorObstacle([Vec3(x: .nan, y: 0, z: 1)] + wall(z: 1, count: 39)))
     }
@@ -150,11 +152,7 @@ final class GeometryDangerTests: XCTestCase {
         XCTAssertFalse(isEmergency([(t: 0, d: 1.4), (t: 0.5, d: 0.9)], rotationRate: -2))
         XCTAssertTrue(isEmergency([(t: 0, d: 2.9), (t: 0.5, d: 2.0)], rotationRate: 0))            // TTC ≈ 1.1 s
         XCTAssertFalse(isEmergency([(t: 0, d: 3.5), (t: 0.5, d: 3.1)], rotationRate: 0))           // too far
-        // Shelf: stepping toward the shelf slowly doesn't alert; something approaching fast does.
         XCTAssertTrue(isEmergency([(t: 0, d: 1.0), (t: 0.5, d: 0.85)], rotationRate: 0))
-        XCTAssertFalse(isEmergency([(t: 0, d: 1.0), (t: 0.5, d: 0.85)], rotationRate: 0, shelfMode: true))
-        XCTAssertTrue(isEmergency([(t: 0, d: 1.8), (t: 0.5, d: 1.2)], rotationRate: 0, shelfMode: true))
-        XCTAssertFalse(isEmergency([(t: 0, d: 1.0), (t: 0.5, d: 0.5)], rotationRate: 0, shelfMode: true))
     }
 
     func testDangerRuleNeedsTwoFrames() {
@@ -173,186 +171,90 @@ final class GeometryDangerTests: XCTestCase {
         XCTAssertFalse(one.update(t: 0.5, distance: 0.9, rotationRate: 0))   // first emergency frame
         XCTAssertTrue(one.update(t: 0.6, distance: 0.8, rotationRate: 0))    // second in a row
         XCTAssertFalse(one.update(t: 0.65, distance: 0.78, rotationRate: 3)) // rotating: streak broken
-        var shelf = GeometryDangerRule()
-        for i in 0..<30 { XCTAssertFalse(shelf.update(t: Double(i) / 30, distance: 0.6 - Float(i) * 0.01, rotationRate: 0, shelfMode: true)) }
     }
 
-    func testSteer() {
-        let blockerRight = (0..<40).map { i in Vec3(x: 0.6, y: Float(i % 5) * 0.1 - 0.2, z: 1.2) }
-        let blockerLeft = blockerRight.map { Vec3(x: -$0.x, y: $0.y, z: $0.z) }
-        let openRight = (0..<40).map { i in Vec3(x: 0.6, y: Float(i % 5) * 0.1 - 0.2, z: 6) }   // beyond 5 m: visible, open
-        let openLeft = openRight.map { Vec3(x: -$0.x, y: $0.y, z: $0.z) }
-        XCTAssertEqual(steerDirection(blockerRight + openLeft, obstacleX: 0.1, obstacleZ: 1), .left)
-        XCTAssertEqual(steerDirection(blockerLeft + openRight, obstacleX: 0.1, obstacleZ: 1), .right)
-        XCTAssertEqual(steerDirection(openLeft + openRight, obstacleX: 0.1, obstacleZ: 1), .left)    // away from the obstacle
-        XCTAssertEqual(steerDirection(openLeft + openRight, obstacleX: -0.1, obstacleZ: 1), .right)
-        XCTAssertEqual(steerDirection(blockerLeft + blockerRight, obstacleX: 0, obstacleZ: 1), .stop)
+    /// Points along x (step 5 cm) at depth z, three heights in the waist-to-head band.
+    private func strip(_ x0: Float, _ x1: Float, z: Float) -> [Vec3] {
+        stride(from: x0, through: x1, by: 0.05).flatMap { x in [-0.2, 0, 0.2].map { Vec3(x: x, y: Float($0), z: z) } }
+    }
+
+    func testSteerToClock() {
+        let far = strip(-3, 3, z: 6)                               // open space, ~±26° visible
+        let post = strip(-0.15, 0.15, z: 1.5)                       // narrow obstacle ahead
+        let leftWall = strip(-0.6, -0.4, z: 1.5)
+        XCTAssertEqual(steerDirection(far + post, obstacleX: 0.05, obstacleZ: 1.5), .clock(11))   // away from its side
+        XCTAssertEqual(steerDirection(far + post, obstacleX: -0.05, obstacleZ: 1.5), .clock(1))
+        XCTAssertEqual(steerDirection(far + post + leftWall, obstacleX: 0.05, obstacleZ: 1.5), .clock(1))
+        XCTAssertEqual(steerDirection(far + strip(-3, 3, z: 1.5), obstacleX: 0, obstacleZ: 1.5), .stop)
         XCTAssertEqual(steerDirection([], obstacleX: 0, obstacleZ: 1), .unknown)
-        XCTAssertEqual(steerDirection(openLeft, obstacleX: 0, obstacleZ: 1), .left)                   // right lane unseen
+        XCTAssertEqual(steerClock(degreesRight: 10), 1)
+        XCTAssertEqual(steerClock(degreesRight: -10), 11)
+        XCTAssertEqual(steerClock(degreesRight: 60), 2)
     }
 
     func testAlertPhrase() {
-        XCTAssertEqual(alertPhrase(label: "person", steer: .right), "Person ahead, steer right")
-        XCTAssertEqual(alertPhrase(label: "Tin can", steer: .stop), "Tin can ahead, stop")
+        XCTAssertEqual(alertPhrase(label: "person", steer: .clock(1), distance: 2), "Person ahead, 2 meters, steer to 1 o'clock")
+        XCTAssertEqual(alertPhrase(label: "cart", steer: .stop, distance: 0.6), "Cart ahead, under 1 meter, stop. Turn slowly.")
         XCTAssertEqual(alertPhrase(label: "  ", steer: .unknown), "Obstacle ahead")
-        XCTAssertEqual(alertPhrase(label: "", steer: .left), "Obstacle ahead, steer left")
+        XCTAssertEqual(alertPhrase(label: "person", steer: .clock(11), distance: 1.4, inSteps: true), "Person ahead, 2 steps, steer to 11 o'clock")
+        XCTAssertEqual(clearPathPhrase(meters: 3.2), "Clear ahead, about 3 meters. Walk straight.")
+        XCTAssertEqual(clearPathPhrase(meters: nil), "Clear ahead. Walk straight.")
     }
-}
 
-final class GeometryStairsTests: XCTestCase {
-    let floorY: Float = -1.3
-    let xs: [Float] = [-0.3, -0.1, 0.1, 0.3]
+    func testThreatOnlyForRealRisks() {
+        func k(_ i: ThreatInput) -> ThreatKind { assessThreat(i).kind }
+        // Person walking toward a still user: high threat.
+        XCTAssertEqual(k(ThreatInput(distance: 2, x: 0, closing: 1.2, walking: false, grounded: true, label: "Person")), .approaching)
+        // Rolling cart while the user walks: closing 1.0 (user) + 0.8 (cart).
+        XCTAssertEqual(k(ThreatInput(distance: 3, x: 0.1, closing: 1.8, walking: true, grounded: true, label: "Cart")), .approaching)
+        // Unknown shape needs more approach speed than a person.
+        XCTAssertEqual(k(ThreatInput(distance: 1.4, x: 0, closing: 0.6, walking: false, grounded: true, label: nil)), .none)
+        XCTAssertEqual(k(ThreatInput(distance: 1.4, x: 0, closing: 0.6, walking: false, grounded: true, label: "Person")), .approaching)
+        // Walking into a shelf / wall / standing person: the cane finds it.
+        XCTAssertEqual(k(ThreatInput(distance: 1.2, x: 0, closing: 1.0, walking: true, grounded: true, label: "Shelf")), .none)
+        // Sitting at a table: everything within reach is ignored, static things never alert.
+        XCTAssertEqual(k(ThreatInput(distance: 0.5, x: 0, closing: 0.9, walking: false, grounded: true)), .none)
+        XCTAssertEqual(k(ThreatInput(distance: 1.5, x: 0, closing: 0.1, walking: false, grounded: true)), .none)
+        // Off to the side: not in the path.
+        XCTAssertEqual(k(ThreatInput(distance: 1.5, x: 0.5, closing: 1.5, walking: false, grounded: true, label: "Person")), .none)
+        // Head-height, not reaching the floor, walking toward it: low threat (spoken, no vibration).
+        XCTAssertEqual(k(ThreatInput(distance: 1.5, x: 0, closing: 1.0, walking: true, grounded: false)), .overhead)
+        // Standing at the shelf (motion state only, no task phase): the hand and held item within 0.8 m never
+        // alert, even moving toward the phone; a cart rolling in still does.
+        XCTAssertEqual(k(ThreatInput(distance: 0.5, x: 0, closing: 1.2, walking: false, grounded: true, label: "Cart")), .none)
+        XCTAssertEqual(k(ThreatInput(distance: 0.9, x: 0, closing: 0.3, walking: false, grounded: true)), .none)
+        XCTAssertEqual(k(ThreatInput(distance: 1.5, x: 0, closing: 0.9, walking: false, grounded: true, label: "Cart")), .approaching)
+    }
 
-    /// Floor from 0.5 m, then `steps` risers of `rise` every `run` from `firstRiser`, then a landing to `end`.
-    private func staircase(firstRiser: Float = 2.0, run: Float = 0.28, rise: Float = 0.18, steps: Int = 4,
-                           end: Float = 3.8) -> [Vec3] {
-        var pts: [Vec3] = []
-        var z: Float = 0.5
-        while z < end {
-            let passed = z < firstRiser ? 0 : min(Int((z - firstRiser) / run) + 1, steps)
-            for x in xs { pts.append(Vec3(x: x, y: floorY + Float(passed) * rise, z: z)) }
-            z += 0.01
+    func testGrounded() {
+        let o = GeometryObstacle(distance: 1.5, x: 0)
+        let legs = (0..<20).map { i in Vec3(x: 0, y: -0.6 - Float(i) * 0.03, z: 1.5) }
+        XCTAssertTrue(isGrounded(legs, obstacle: o, floorY: -1.3))
+        XCTAssertFalse(isGrounded([], obstacle: o, floorY: -1.3))
+    }
+
+    /// Floor points 0.5–2 m ahead (10 cm bins, 10 points each) at `height(z)` relative to the floor.
+    private func floorStrip(to end: Float, height: (Float) -> Float = { _ in 0 }) -> [Vec3] {
+        stride(from: Float(0.55), to: end, by: 0.1).flatMap { z in
+            (0..<10).map { i in Vec3(x: Float(i) * 0.06 - 0.27, y: -1.3 + height(z), z: z) }
         }
-        for i in 0..<steps {
-            let rz = firstRiser + Float(i) * run
-            var h = Float(i) * rise
-            while h < Float(i + 1) * rise { for x in xs { pts.append(Vec3(x: x, y: floorY + h, z: rz)) }; h += 0.02 }
+    }
+
+    func testFloorThatFadesOutIsNotStairs() {
+        // Shiny floor: no LiDAR returns past 2 m. Used to read as "stairs going down".
+        XCTAssertNil(detectStairs(floorStrip(to: 2.0), floorY: -1.3))
+    }
+
+    func testGentleSlopeIsNotStairs() {
+        // A slightly leaning phone makes the far floor look lower bit by bit: no sharp edge, no stairs.
+        XCTAssertNil(detectStairs(floorStrip(to: 4.0) { z in -0.07 * (z - 0.5) }, floorY: -1.3))
+    }
+
+    func testSharpDropIsStairsDown() {
+        let near = floorStrip(to: 1.6)
+        let lower = stride(from: Float(1.65), to: 2.5, by: 0.1).flatMap { z in
+            (0..<10).map { i in Vec3(x: Float(i) * 0.06 - 0.27, y: -1.3 - 0.36, z: z) }
         }
-        return pts
-    }
-
-    private func flat(from: Float, to: Float, h: Float = 0) -> [Vec3] {
-        var pts: [Vec3] = []
-        var z = from
-        while z < to { for x in xs { pts.append(Vec3(x: x, y: floorY + h, z: z)) }; z += 0.01 }
-        return pts
-    }
-
-    func testStairsUp() {
-        let o = detectStairs(staircase(), floorY: floorY)
-        XCTAssertEqual(o?.up, true)
-        XCTAssertEqual(o?.steps, 4)
-        XCTAssertEqual(o?.distance ?? 0, 2.0, accuracy: 0.11)
-        XCTAssertEqual(o?.more, false)
-    }
-
-    func testStairsUpTopHidden() {
-        let o = detectStairs(staircase(steps: 7, end: 4.2), floorY: floorY)   // steps above the waist band are filtered
-        XCTAssertEqual(o?.up, true)
-        XCTAssertEqual(o?.more, true)
-        XCTAssertEqual(o?.steps, 4)
-    }
-
-    func testRiserBinsAreDropped() {
-        // Explicit straddle bins halfway between treads.
-        var pts: [Vec3] = []
-        func bin(_ k: Int, _ h: Float) { for j in 0..<10 { for x in xs { pts.append(Vec3(x: x, y: floorY + h, z: Float(k) * 0.1 + 0.005 + Float(j) * 0.009)) } } }
-        for k in 5...19 { bin(k, 0) }
-        bin(20, 0.09); bin(21, 0.18); bin(22, 0.18); bin(23, 0.27); bin(24, 0.36); bin(25, 0.36); bin(26, 0.45)
-        for k in 27...30 { bin(k, 0.54) }
-        let o = detectStairs(pts, floorY: floorY)
-        XCTAssertEqual(o?.up, true)
-        XCTAssertEqual(o?.steps, 3)
-        XCTAssertEqual(o?.distance ?? 0, 2.0, accuracy: 1e-5)
-    }
-
-    func testStairsDown() {
-        let pts = flat(from: 0.5, to: 2.0) + flat(from: 2.3, to: 2.58, h: -0.18) + flat(from: 2.58, to: 2.86, h: -0.36)
-            + flat(from: 2.86, to: 3.5, h: -0.54)
-        let o = detectStairs(pts, floorY: floorY)
-        XCTAssertEqual(o?.up, false)
-        XCTAssertEqual(o?.distance ?? 0, 2.0, accuracy: 0.11)
-        XCTAssertEqual(o?.steps, 3)
-    }
-
-    func testDropOffWithNothingBeyond() {
-        let o = detectStairs(flat(from: 0.5, to: 1.8), floorY: floorY)
-        XCTAssertEqual(o?.up, false)
-        XCTAssertEqual(o?.distance ?? 0, 1.8, accuracy: 1e-4)
-        XCTAssertNil(o?.steps)
-        // Something standing there hides the floor: not a drop-off.
-        let cartEdge = (0..<40).map { i in Vec3(x: Float(i % 4) * 0.2 - 0.3, y: -0.2, z: 2.2) }
-        XCTAssertNil(detectStairs(flat(from: 0.5, to: 1.8) + cartEdge, floorY: floorY))
-        XCTAssertNil(detectStairs(flat(from: 0.5, to: 4.0), floorY: floorY))     // floor fades out far away
-    }
-
-    func testNotStairs() {
-        XCTAssertNil(detectStairs([], floorY: floorY))
-        XCTAssertNil(detectStairs(staircase(steps: 1), floorY: floorY))           // one curb: the cane's job
-        var ramp: [Vec3] = flat(from: 0.5, to: 2.0)
-        var z: Float = 2.0
-        while z < 4.0 { for x in xs { ramp.append(Vec3(x: x, y: floorY + (z - 2) * 0.15, z: z)) }; z += 0.01 }
-        XCTAssertNil(detectStairs(ramp, floorY: floorY))
-        let person = (0..<200).map { i in Vec3(x: Float(i % 4) * 0.2 - 0.3, y: floorY + Float(i / 4) * 0.018, z: 2.2) }
-        XCTAssertNil(detectStairs(flat(from: 0.5, to: 2.1) + person, floorY: floorY))
-        XCTAssertNil(detectStairs(staircase(rise: 0.3), floorY: floorY))          // rises too tall
-        XCTAssertNil(detectStairs(staircase(), floorY: .nan))
-    }
-
-    func testFloorEstimate() {
-        let pts = flat(from: 0.5, to: 2.5)
-        XCTAssertEqual(estimateFloorY(pts) ?? 0, floorY, accuracy: 1e-5)
-        XCTAssertNil(estimateFloorY(Array(pts.prefix(10))))
-        var tracker = GeometryFloorTracker(initial: -1.2, smoothing: 0.5)
-        XCTAssertEqual(tracker.update(pts) ?? 0, -1.25, accuracy: 1e-5)
-        XCTAssertEqual(tracker.update([]) ?? 0, -1.25, accuracy: 1e-5)     // no estimate → keeps the last one
-    }
-
-    func testTrackerConfirmsAndAnnouncesOnce() {
-        var tr = GeometryStairsTracker()
-        let far = StairsObservation(up: true, distance: 3, steps: 8)
-        XCTAssertNil(tr.update(far, yoloStairs: false, t: 0))
-        XCTAssertNil(tr.update(far, yoloStairs: false, t: 0.03))
-        XCTAssertEqual(tr.update(far, yoloStairs: false, t: 0.06), .first(far))
-        XCTAssertNil(tr.update(StairsObservation(up: true, distance: 2.5, steps: 8), yoloStairs: true, t: 0.5))
-        XCTAssertNil(tr.walked(steps: 1, t: 1))                                 // 1.8 m left
-        guard case .near(let o)? = tr.walked(steps: 1, t: 1.5) else { return XCTFail("expected the 1 meter call") }
-        XCTAssertEqual(o.distance, 1.1, accuracy: 1e-4)
-        XCTAssertEqual(o.steps, 8)
-        XCTAssertNil(tr.update(StairsObservation(up: true, distance: 0.9, steps: 8), yoloStairs: true, t: 2))
-        XCTAssertNil(tr.update(nil, yoloStairs: false, t: 3))
-        let next = StairsObservation(up: false, distance: 2, steps: nil)
-        XCTAssertEqual(tr.update(next, yoloStairs: true, t: 9), .first(next))  // new staircase, YOLO confirms at once
-        var close = GeometryStairsTracker()
-        let near = StairsObservation(up: true, distance: 1.0, steps: 3)
-        XCTAssertEqual(close.update(near, yoloStairs: true, t: 0), .first(near))
-        XCTAssertNil(close.update(near, yoloStairs: true, t: 0.1))             // already close: no second line
-    }
-
-    func testPhrases() {
-        XCTAssertEqual(stairsAnnouncement(StairsObservation(up: true, distance: 3.2, steps: 8)),
-                       "Stairs going up, about 8 steps, 3 meters, 12 o'clock.")
-        XCTAssertEqual(stairsAnnouncement(StairsObservation(up: true, distance: 2.6, steps: 4, more: true), clock: 1),
-                       "Stairs going up, more than 4 steps, 3 meters, 1 o'clock.")
-        XCTAssertEqual(stairsAnnouncement(StairsObservation(up: false, distance: 0.4)), "Stairs going down, 1 meter, 12 o'clock.")
-        XCTAssertEqual(stairsNearAnnouncement(), "Stairs, 1 meter ahead.")
-        XCTAssertEqual(spokenMeters(.nan), "1 meter")
-    }
-}
-
-final class GeometryDeadReckoningTests: XCTestCase {
-    func testArrivalBesideTheUser() {
-        var dr = GeometryDeadReckoning(bearingDegreesRight: 30, distance: 10, heading: 0, steps: 100)
-        XCTAssertEqual(dr.bearing(heading: 0), 30, accuracy: 1e-9)
-        XCTAssertEqual(dr.distance, 10, accuracy: 1e-9)
-        dr.update(heading: 0, steps: 106)                               // 4.2 m ahead
-        XCTAssertEqual(dr.bearing(heading: 0), 48.3, accuracy: 0.5)
-        XCTAssertFalse(dr.hasPassedSide(heading: 0))
-        dr.update(heading: 0, steps: 112)                               // 8.4 m: the sign is beside us
-        XCTAssertTrue(dr.hasPassedSide(heading: 0))
-        XCTAssertEqual(dr.clock(heading: 0), 3)
-        XCTAssertEqual(dr.clock(heading: 90), 12)                      // after "Turn to 3 o'clock."
-        dr.update(heading: 0, steps: 0)                                 // pedometer reset: no movement
-        XCTAssertTrue(dr.hasPassedSide(heading: 0))
-    }
-
-    func testLeftSideAndTurns() {
-        var dr = GeometryDeadReckoning(bearingDegreesRight: -40, distance: 8, heading: 90, steps: 0)
-        for s in stride(from: 2, through: 10, by: 2) { dr.update(heading: 90, steps: s) }
-        XCTAssertTrue(dr.hasPassedSide(heading: 90))
-        XCTAssertEqual(dr.clock(heading: 90), 9)
-        dr.resight(bearingDegreesRight: 0, distance: 5, heading: 0, steps: 10)
-        XCTAssertEqual(dr.bearing(heading: 0), 0, accuracy: 1e-9)
-        XCTAssertEqual(dr.lastSteps, 10)
+        XCTAssertEqual(detectStairs(near + lower, floorY: -1.3)?.up, false)
     }
 }

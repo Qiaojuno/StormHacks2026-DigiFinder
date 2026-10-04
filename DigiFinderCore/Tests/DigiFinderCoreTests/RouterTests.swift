@@ -100,13 +100,17 @@ final class RouterTests: XCTestCase {
         XCTAssertEqual(kind(router.route("pb")), .unknown("pb"))   // no synonyms → unknown item
     }
 
-    func testRouteWithChangeKeepsMultiProductChange() {
-        XCTAssertEqual(router.routeWithChange("actually coffee and milk").change, .replace)
-        XCTAssertEqual(router.routeWithChange("also coffee and milk").change, .add)
-        XCTAssertEqual(router.routeWithChange("coffee and milk").change, .unspecified)
-        XCTAssertEqual(kind(router.routeWithChange("actually coffee and milk").request), .goals)
-        XCTAssertEqual(router.routeWithChange("toothpaste instead").request, .unknownProduct("toothpaste", .replace))
-        XCTAssertNil(router.routeWithChange("um").request)
+    func testMultiProductKeepsGoalChange() {
+        func change(_ s: String) -> GoalChange? {
+            if case .products(_, let c)? = router.route(s) { return c }
+            return nil
+        }
+        XCTAssertEqual(change("actually coffee and milk"), .replace)
+        XCTAssertEqual(change("also coffee and milk"), .add)
+        XCTAssertEqual(change("coffee and milk"), .unspecified)
+        XCTAssertEqual(kind(router.route("actually coffee and milk")), .goals)
+        XCTAssertEqual(router.route("toothpaste instead"), .unknownProduct("toothpaste", .replace))
+        XCTAssertNil(router.route("um"))
     }
 
     func testDestinationsAreDeterministicAndAloneOnly() {

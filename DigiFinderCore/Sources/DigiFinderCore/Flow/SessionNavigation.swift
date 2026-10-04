@@ -3,24 +3,30 @@
 // MARK: - Inside / outside and the entrance (P1)
 
 extension ShoppingSession {
+    /// Outside detected (or said) → Entrance; "You're inside" → FindAisle (the place is a store from then on).
     mutating func setOutside(_ isOutside: Bool, saidByUser: Bool) {
         let changed = state.outside != isOutside
         state.outside = isOutside
         if isOutside {
-            guard changed || saidByUser, hasActiveGoal,
-                  state.step == .findingSignage || state.step == .findingDestination else { return }
+            // Not in a general place (home, campus, outdoors…): there the cameras see "outside" without a store.
+            guard changed || saidByUser, saidByUser || !isGeneral, !placeWaiting || saidByUser,
+                  state.step == .idle || state.step == .findAisle else { return }
+            if state.step == .idle && (state.askingNext || state.pendingChoice != nil || state.openingPending) { return }
             enterEntrance()
-        } else if state.step == .findingEntrance {
+        } else if state.step == .entrance {
             announce(SessionPhrases.inside)
-            enter(state.goal != nil ? .findingSignage : state.destination != nil ? .findingDestination : .idle)
+            state.place = .store                              // came in through a store entrance
+            state.placeCheck = nil
+            if hasActiveGoal { enterFindAisle() } else { enter(.idle) }
         }
     }
 
     mutating func enterEntrance() {
-        enter(.findingEntrance)
-        state.entrance = SessionEntranceState(online: state.online)
+        enter(.entrance)
+        let online = state.online && state.onlineHelp
+        state.entrance = SessionEntranceState(online: online)
         announce(SessionPhrases.lookingForEntrance)
-        if state.online { requestPick() }
+        if online { requestPick() }
     }
 
     mutating func requestPick() {
@@ -32,7 +38,7 @@ extension ShoppingSession {
     }
 
     mutating func entrancePicked(_ pick: EntrancePick?) {
-        guard state.step == .findingEntrance, state.entrance.online else { return }
+        guard state.step == .entrance, state.entrance.online else { return }
         state.entrance.awaitingPick = false
         guard let p = pick else {
             if state.entrance.tries >= SessionTuning.maxPicks {    // give up on photos: door signs instead
@@ -44,22 +50,25 @@ extension ShoppingSession {
             state.entrance.yawAtFail = state.yaw
             return
         }
-        let degrees = Geometry.degreesRight(portraitX: p.x, horizontalFOV: SessionTuning.stillHorizontalFOV)
+        // The runner fills the clocks from Stream B intrinsics; without them, a nominal field of view.
+        let degrees = p.clock.map(clockDegrees)
+            ?? Geometry.degreesRight(portraitX: p.x, horizontalFOV: SessionTuning.stillHorizontalFOV)
         state.entrance.bearing = state.yaw + degrees
         state.entrance.lastTrackedAt = state.now
         state.entrance.tries = 0
         guard !state.entrance.pickAnnounced else { return }       // say it once
         state.entrance.pickAnnounced = true
-        announce(SessionPhrases.entranceAt(clockPosition(degreesRight: degrees), kind: p.kind))
-        if let corral = p.cartCorralX {
-            let c = clockPosition(degreesRight: Geometry.degreesRight(portraitX: corral, horizontalFOV: SessionTuning.stillHorizontalFOV))
+        announce(SessionPhrases.entranceAt(p.clock ?? clockPosition(degreesRight: degrees), kind: p.kind))
+        if let c = p.cartCorralClock ?? p.cartCorralX.map({
+            clockPosition(degreesRight: Geometry.degreesRight(portraitX: $0, horizontalFOV: SessionTuning.stillHorizontalFOV))
+        }) {
             narrate(SessionPhrases.cartCorral(c))
         }
         if state.verbosity == .detailed, let note = p.note, !note.isEmpty { narrate(note) }
     }
 
     mutating func doorsSeen(_ doors: [DoorObservation]) {
-        guard state.step == .findingEntrance, !doors.isEmpty else { return }
+        guard state.step == .entrance, !doors.isEmpty else { return }
         state.entrance.lastDoorAt = state.now
         if state.entrance.online {
             guard let picked = state.entrance.bearing else { return }           // waiting for the pick
@@ -84,12 +93,12 @@ extension ShoppingSession {
         }
         let nearest = byDistance[0]
         if nearest.label == .exit, let other = byDistance.first(where: { $0.label != .exit }) {
-            guide(SessionPhrases.exitDoor(otherClock: other.clock), dedupe: true)
+            guide(SessionPhrases.exitDoor(otherClock: other.clock, distance: other.distance, steps: state.distanceInSteps), dedupe: true)
             return
         }
         if nearest.label == .unknown, !state.entrance.noSignSaid {     // no sign on any door: nearest, honestly
             state.entrance.noSignSaid = true
-            announce(SessionPhrases.doorNoSign(clock: nearest.clock, distance: nearest.distance))
+            announce(SessionPhrases.doorNoSign(clock: nearest.clock, distance: nearest.distance, steps: state.distanceInSteps))
         }
     }
 
@@ -97,7 +106,7 @@ extension ShoppingSession {
     mutating func announceEntranceAhead(_ d: DoorObservation) {
         guard !state.entrance.aheadSaid, let m = d.distance, m <= SessionTuning.entranceAnnounceMeters else { return }
         state.entrance.aheadSaid = true
-        announce(SessionPhrases.entranceAhead(m, clock: d.clock))
+        announce(SessionPhrases.entranceAhead(m, clock: d.clock, steps: state.distanceInSteps))
     }
 
     func bearing(of d: DoorObservation) -> Double { state.yaw + SessionGeometry.degrees(forClock: d.clock) }
@@ -133,31 +142,29 @@ extension ShoppingSession {
 
 extension ShoppingSession {
     mutating func signsSeen(_ signs: [AisleSign]) {
-        guard state.step != .paused else { return }
-        let flowStep = state.step == .asking ? (state.resumeStep ?? .idle) : state.step
-        let navigating = flowStep == .findingSignage || flowStep == .shelfVote
-        if canObserve, !signs.isEmpty { state.marks.lastAnySignAt = state.now }
+        guard state.pause == nil else { return }
+        if canObserve, !signs.isEmpty { state.marks.lastAnySignAt = state.now }   // any sign resets the "no sign" wait
+        guard state.goal == nil || !isGeneral else { return }                  // not a store: no sign prompts
+        let navigating = state.step == .findAisle && state.goal != nil
 
         // While the user talks, a target sign is still remembered (its bearing), just not spoken.
         if let goal = state.goal, navigating, let hit = targetSign(in: signs, words: navigationWords(goal), goal: goal) {
             rememberTargetSign(hit.sign)
             guard canObserve else { return }
-            if state.step == .shelfVote { enter(.findingSignage) }     // a readable sign overrides the vote
+            if state.vote != nil { state.vote = nil }          // a readable target sign ends the vote
             signDirection(hit.sign, word: hit.word)
             return
         }
         guard canObserve else { return }
         switch state.step {
-        case .walkingAisle:
-            guard let goal = state.goal, state.marks.turnBearing == nil,
+        case .inAisle:
+            guard let goal = state.goal, state.pendingPick == nil,
                   let hit = targetSign(in: signs.filter { $0.number == nil }, words: shelfWords(goal), goal: goal) else { return }
             noteEvidence()
-            announce(SessionPhrases.shelfAt(hit.word, clock: hit.sign.clock))
-            enterPointing(prompt: true)
-        case .findingDestination:
+            stopAtShelf(SessionPhrases.stopHereShelf(clock: hit.sign.clock))
+        case .findAisle:
             if let d = state.destination { destinationSigns(signs, d) }
-        case .findingSignage:
-            if let goal = state.goal, !signs.isEmpty { otherSigns(signs, goal: goal) }
+            else if let goal = state.goal, !signs.isEmpty, state.vote == nil { otherSigns(signs, goal: goal) }
         default:
             break
         }
@@ -229,8 +236,10 @@ extension ShoppingSession {
         return xs.filter { seen.insert($0).inserted }
     }
 
+    /// FindAisle in a store, looking for signs.
     mutating func signageTimers() {
         guard let goal = state.goal else { return }
+        if state.vote != nil { voteProgress(); lostTimers(); return }
         let now = state.now
         let lastSign = state.marks.lastAnySignAt ?? -Double.infinity
         if !state.marks.scanPrompted, lastSign < state.marks.scanAnchor, now - state.marks.scanAnchor >= SessionTuning.scanPrompt {
@@ -239,14 +248,11 @@ extension ShoppingSession {
             } ?? SessionPhrases.noSigns
             if guide(line) { state.marks.scanPrompted = true }
         }
-        // Sign out of view (overhead, or inside an aisle): step back and vote, once per goal.
-        // Anchored on the last recalculate too, so time spent talking doesn't count.
-        if !state.progress.voteDone, goal.category != nil, state.progress.signMemory == nil,
+        // No readable sign for ~10 s (overhead, or inside an aisle): step back and vote, once per goal.
+        // Any sign resets the wait; anchored on the last recalculate too, so time spent talking doesn't count.
+        if !state.progress.voteDone, goal.category != nil, state.progress.signMemory == nil, state.aisleBearing == nil,
            now - max(lastSign, state.marks.scanAnchor) >= SessionTuning.outOfView {
-            state.progress.voteDone = true
-            announce(SessionPhrases.stepBackTwo)
-            enter(.shelfVote)
-            announce(SessionPhrases.faceLeft)
+            startVote()
             return
         }
         lostTimers()
@@ -257,33 +263,68 @@ extension ShoppingSession {
         let now = state.now
         if let lost = state.progress.lostTrackAt {
             if now - lost >= SessionTuning.lostPause { pauseLost() }
-        } else if state.step == .findingSignage, now - state.progress.evidenceAt >= SessionTuning.lostTrack,
+        } else if state.vote == nil, now - state.progress.evidenceAt >= SessionTuning.lostTrack,
                   guide(SessionPhrases.lostTrack) {
             state.progress.lostTrackAt = now
         }
     }
 }
 
-// MARK: - Shelf vote, arrival, walking the aisle
+// MARK: - Shelf vote (sub-state of FindAisle, §5.7)
 
 extension ShoppingSession {
-    mutating func voteTimers() {
-        let elapsed = state.now - state.stepStartedAt
-        if state.marks.voteStage == 0, elapsed >= SessionTuning.voteFace {
-            state.marks.voteStage = 1
-            announce(SessionPhrases.faceRight)
-        } else if state.marks.voteStage == 1, elapsed >= 2 * SessionTuning.voteFace {
-            announce(SessionPhrases.walkToEnd)
-            enter(.findingSignage)
-        }
+    mutating func startVote() {
+        state.progress.voteDone = true
+        state.vote = SessionVote(since: state.now, baseYaw: state.yaw, stepsAtPrompt: state.steps)
+        announce(SessionPhrases.stepBackTwo)
     }
 
+    /// Step back (then Standing) → face 9 o'clock → face 3 o'clock → back to the sign search.
+    mutating func voteProgress() {
+        guard var v = state.vote, !guidanceHeld else { return }
+        let now = state.now
+        switch v.stage {
+        case .stepBack:
+            if state.isWalking || state.steps > v.stepsAtPrompt { v.moved = true }
+            // Once Standing after stepping back (without motion data: at once).
+            guard (v.moved || !state.hasMotion) && !state.isWalking else { state.vote = v; return }
+            v.stage = .left
+            v.since = now
+            v.facingSince = state.hasMotion ? nil : now
+            state.vote = v
+            announce(SessionPhrases.faceLeft)
+        case .left, .right:
+            let side = v.baseYaw + (v.stage == .left ? -90 : 90)
+            let facing = !state.hasMotion || abs(SessionGeometry.angle(state.yaw, from: side)) <= SessionTuning.voteFacingDegrees
+            if facing { v.facingSince = v.facingSince ?? now } else { v.facingSince = nil }
+            let checked = (v.facingSince.map { now - $0 >= SessionTuning.voteFace } ?? false)
+                || now - v.since >= 2 * SessionTuning.voteFace
+            guard checked else { state.vote = v; return }
+            if v.stage == .left {
+                v.stage = .right
+                v.since = now
+                v.facingSince = state.hasMotion ? nil : now
+                state.vote = v
+                announce(SessionPhrases.faceRight)
+            } else {
+                state.vote = nil                                  // both sides checked: back to the signs
+                state.marks.scanAnchor = now
+                state.marks.scanPrompted = true
+                announce(SessionPhrases.walkToEnd)
+            }
+        }
+    }
+}
+
+// MARK: - Aisle verdict, arrival, walking the aisle
+
+extension ShoppingSession {
     mutating func aisleVerdict(_ aisle: String?, evidence: [String]) {
-        guard let goal = state.goal else { return }
+        guard let goal = state.goal, !isGeneral else { return }
         let isTarget = aisle != nil && aisle == goal.category
         if isTarget { noteEvidence() }
         switch state.step {
-        case .findingSignage, .shelfVote:
+        case .findAisle:
             if isTarget, let a = aisle { confirmAisleByVote(goal, aisle: a, evidence: evidence); return }
             if let t = state.progress.lastTargetSignAt, state.now - t < SessionTuning.signOverride { return }
             guard let target = goal.category else { return }          // word search: no aisle to compare
@@ -292,14 +333,14 @@ extension ShoppingSession {
                 let adjacent = (catalog[target]?.adjacent ?? []).contains(a) || (catalog[a]?.adjacent ?? []).contains(target)
                 let other = otherAisleWords(a, excluding: name, max: adjacent ? 2 : 1)
                 guide(adjacent ? SessionPhrases.adjacent(other, target: name) : SessionPhrases.different(other, target: name), dedupe: true)
-                if state.step == .shelfVote { enter(.findingSignage) }
-            } else if state.step == .findingSignage, !state.marks.unsureSaid, guide(SessionPhrases.unsure) {
+                state.vote = nil
+            } else if state.vote == nil, !state.marks.unsureSaid, guide(SessionPhrases.unsure) {
                 state.marks.unsureSaid = true
             }
-        case .walkingAisle:
-            guard isTarget, state.marks.turnBearing == nil else { return }
-            announce(SessionPhrases.turnToShelf)
-            enterPointing(prompt: true)
+        case .inAisle:
+            // The vote located the item's section.
+            guard isTarget, state.pendingPick == nil else { return }
+            stopAtShelf(SessionPhrases.stopHere)
         default:
             break
         }
@@ -316,8 +357,9 @@ extension ShoppingSession {
             announce(SessionPhrases.thisIsAisle(name))
             if !things.isEmpty { narrate(SessionPhrases.seeOnBothSides(things)) }
         }
-        enter(.walkingAisle)
-        state.marks.shelfCueAt = state.now + SessionTuning.shelfCue
+        enter(.inAisle)
+        markAisleEntry()
+        narrate(SessionPhrases.walkSlowly)
     }
 
     func otherAisleWords(_ aisle: String, excluding: String, max: Int) -> String {
@@ -325,51 +367,54 @@ extension ShoppingSession {
         return words.isEmpty ? displayAisle(aisle) : SessionPhrases.list(Array(words.prefix(max)))
     }
 
-    /// "Stop. Aisle 6 is at 9 o'clock." → "Turn to 9 o'clock." (speech only)
+    /// The target sign was passed (dead reckoning): "Stop. Aisle 6 is at 9 o'clock." The phase stays FindAisle until
+    /// the vote confirms the aisle or the user walks into it (heading within ~45° of its bearing).
     mutating func arrivedAtAisle(clock: Int) {
-        guard let goal = state.goal, state.step == .findingSignage || state.step == .shelfVote else { return }
+        guard let goal = state.goal, state.step == .findAisle, !isGeneral else { return }
         let memory = state.progress.signMemory
         announce(SessionPhrases.stopAtAisle(number: memory?.number, name: aisleName(goal), clock: clock,
                                             categories: state.verbosity == .detailed ? memory?.words ?? [] : []))
-        announce(SessionPhrases.turnTo(clock))
         noteEvidence()
-        enter(.walkingAisle)
-        state.marks.turnBearing = state.yaw + SessionGeometry.degrees(forClock: clock)
-        state.marks.turnDueAt = state.now + SessionTuning.turnFallback
+        state.vote = nil
+        state.aisleBearing = state.yaw + SessionGeometry.degrees(forClock: clock)
     }
 
-    /// Facing into the aisle: "This is the coffee aisle. Walk through slowly."
-    mutating func turnedIntoAisle() {
+    /// Walking into the aisle: "This is the coffee aisle. Walk through slowly."
+    mutating func walkedIntoAisle() {
         guard let goal = state.goal else { return }
-        state.marks.turnBearing = nil
-        state.marks.turnDueAt = nil
+        enter(.inAisle)
         markAisleEntry()
         announce(SessionPhrases.thisIsAisle(aisleName(goal)))
         narrate(SessionPhrases.walkSlowly)
     }
 
-    mutating func aisleTimers() {
-        if let due = state.marks.turnDueAt, state.now >= due { turnedIntoAisle() }
-        if let cue = state.marks.shelfCueAt, state.now >= cue {
-            state.marks.shelfCueAt = nil
-            announce(SessionPhrases.turnToShelf)
-            enterPointing(prompt: true)
-        }
+    /// "Stop here. Turn to the shelf…" then Pick once the user stands.
+    mutating func stopAtShelf(_ line: String) {
+        announce(line)
+        state.pendingPick = .shelf
+        state.pickReturn = .inAisle
+        pickWhenStanding()
     }
 
-    /// Walked the aisle both ways: turned back and walked as far again (pedometer).
-    mutating func aisleWalked() {
-        if let target = state.marks.turnBearing {
-            if abs(SessionGeometry.angle(state.yaw, from: target)) <= SessionTuning.turnDoneDegrees { turnedIntoAisle() }
-            return
-        }
-        guard let y0 = state.progress.entryYaw, let s0 = state.progress.entrySteps else { return }
-        if let s1 = state.progress.turnBackSteps {
-            if state.steps - s1 >= max(SessionTuning.minAisleSteps, s1 - s0) { notFound() }
-        } else if abs(SessionGeometry.angle(state.yaw, from: y0)) >= SessionTuning.turnBackDegrees,
-                  state.steps - s0 >= SessionTuning.minAisleSteps {
-            state.progress.turnBackSteps = state.steps
-        }
+    /// LiDAR: the shelves stopped on both sides.
+    mutating func aisleEndSeen() {
+        guard state.step == .inAisle, let s0 = state.progress.entrySteps,
+              state.steps - s0 >= SessionTuning.minAisleSteps else { return }
+        aisleEnd()
+    }
+
+    /// Pedometer backup: ~20 m since entering the aisle.
+    mutating func aisleEndBackup() {
+        guard state.step == .inAisle, let s0 = state.progress.entrySteps else { return }
+        if Float(state.steps - s0) * SessionTuning.stepLengthMeters >= SessionTuning.aisleEndBackupMeters { aisleEnd() }
+    }
+
+    /// "End of aisle. Item not found here." + what the user can do; once per goal.
+    mutating func aisleEnd() {
+        guard state.goal != nil, !state.progress.aisleEndSaid, state.pendingPick == nil else { return }
+        state.progress.aisleEndSaid = true
+        announce(SessionPhrases.aisleEnd)
+        announce(SessionPhrases.aisleEndOffer)
     }
 }
 
@@ -391,7 +436,8 @@ extension ShoppingSession {
         }
         state.progress.lastDestinationSignAt = state.now
         noteEvidence()
-        let line = d == .checkout ? SessionPhrases.checkoutsAhead(sign.clock) : SessionPhrases.serviceDesk(sign.clock)
+        let line = d == .checkout ? SessionPhrases.checkoutsAhead(sign.clock, distance: sign.distance, steps: state.distanceInSteps)
+                                   : SessionPhrases.serviceDesk(sign.clock, distance: sign.distance, steps: state.distanceInSteps)
         if !state.marks.destinationSeen {
             state.marks.destinationSeen = true
             announce(line)
@@ -430,5 +476,196 @@ enum SessionGeometry {
         if d > 180 { d -= 360 }
         if d <= -180 { d += 360 }
         return d
+    }
+}
+
+// MARK: - Grocery or not (Gemini at app open; manual settings win)
+
+extension ShoppingSession {
+    /// Not a store: look around for the item itself (no signs, vote or aisle end). Destinations always use signs.
+    /// General is the default (owner decision): the store flow runs only when Gemini said "grocery store" with enough
+    /// confidence, the user came in through a store entrance, or the user chose store mode.
+    var isGeneral: Bool {
+        if !state.onDeviceItemSearch { return true }       // no sign reading: always the Gemini-guided search
+        if let o = state.placeOverride { return o == .general }
+        return state.place != .store
+    }
+
+    /// Waiting for the grocery answer: FindAisle stays quiet (signs and sightings are still handled).
+    var placeWaiting: Bool { state.placeOverride == nil && state.placeCheck != nil }
+
+    mutating func requestPlaceCheck() {
+        state.placeTries += 1
+        state.placeCheck = SessionPlaceCheck(askedAt: state.now, tries: state.placeTries)
+        out.append(.classifyPlace)
+    }
+
+    mutating func placeClassified(_ answer: PlaceAnswer?) {
+        guard state.placeCheck != nil else { return }                                  // late answers are dropped
+        if let a = answer {
+            state.placeConfidence = a.confidence
+            state.placeScene = a.scene
+            if a.confidence >= SessionTuning.placeMinConfidence {
+                placeDecided(a.grocery ? .store : .general,
+                             line: a.grocery ? SessionPhrases.inGroceryStore : SessionPhrases.looksLikePlace(a.scene))
+                return
+            }
+            if state.placeTries < 2 { requestPlaceCheck(); return }                    // unsure: 3 new photos, once
+        }
+        placeDecided(.general, line: SessionPhrases.couldntTellPlace)                  // no answer: general
+    }
+
+    mutating func placeTimers() {
+        guard let check = state.placeCheck, state.now - check.askedAt >= SessionTuning.placeTimeout else { return }
+        placeDecided(.general, line: SessionPhrases.couldntTellPlace)
+    }
+
+    /// Said once, right before the opening question.
+    mutating func placeDecided(_ place: SessionPlace?, line: String) {
+        state.placeCheck = nil
+        state.place = place
+        state.placeDecidedAt = state.now
+        // Owner decision: the place is never announced. A request that got "Loading." now gets its real line.
+        state.openingPending = false
+        if state.loadingGoal {
+            state.loadingGoal = false
+            if let g = state.goal { announce(SessionPhrases.nowLookingFor(name(g))) }
+        }
+        placeChanged()
+    }
+
+    /// "It's nearby" / Settings nearby mode (general), "store mode" (store), or automatic (nil).
+    mutating func setPlaceOverride(_ p: SessionPlace?) {
+        guard state.placeOverride != p else { return }
+        state.placeOverride = p
+        if p != nil {                                           // a manual setting skips the Gemini check
+            state.placeCheck = nil
+            if state.openingPending {                           // and its announcement
+                state.openingPending = false
+                if !hasActiveGoal && !state.askingNext { announce(SessionPhrases.askGoal) }
+            }
+        }
+        state.placeDecidedAt = state.now
+        placeChanged()
+    }
+
+    /// The search adapts to the place (silent unless the user must act).
+    mutating func placeChanged() {
+        guard state.goal != nil else { return }
+        if isGeneral {
+            switch state.step {
+            case .inAisle, .entrance: enterFindAisle()
+            case .findAisle:
+                state.vote = nil
+                state.aisleBearing = nil
+                state.marks = SessionStepMarks(anchor: state.now)
+                guide(SessionPhrases.turnSlowly)
+            default: break
+            }
+        } else if state.step == .findAisle {
+            state.marks.scanAnchor = state.now                 // sign prompts start now
+            state.marks.scanPrompted = false
+        }
+    }
+
+    /// Not a store: "Turn slowly." every ~15 s; ~60 s with no sighting → next goal.
+    mutating func nearbyTimers() {
+        let now = state.now
+        let anchor = max(state.stepStartedAt, state.itemSeenAt ?? -Double.infinity, state.placeDecidedAt ?? -Double.infinity)
+        if now - anchor >= SessionTuning.nearbyGiveUp, let g = state.goal {
+            announce(SessionPhrases.notFoundNearby(name(g)))
+            out.append(.chime(.done))
+            advanceToNext()
+            return
+        }
+        let last = max(state.marks.lastPointCueAt ?? -Double.infinity, anchor)
+        if now - last >= SessionTuning.nearbyPrompt, guide(SessionPhrases.turnSlowly) { state.marks.lastPointCueAt = now }
+    }
+}
+
+// MARK: - Item in view: the global rule in every search phase (Entrance, FindAisle, InAisle)
+
+extension ShoppingSession {
+    mutating func itemSeen(clock: Int, distance: Float?) {
+        guard let g = state.goal, [.entrance, .findAisle, .inAisle].contains(state.step) else { return }
+        noteEvidence()
+        state.itemSeenAt = state.now
+        let ahead = clock == 12 || clock == 11 || clock == 1
+        if ahead, let d = distance, d <= SessionTuning.reachMeters {
+            state.itemClock = clock
+            state.itemDistance = distance
+            if state.isWalking {
+                // "Stop. Coffee at 12 o'clock." once; Pick when the user stands.
+                guard state.pendingPick != .item else { return }
+                state.pendingPick = .item
+                state.pickReturn = state.step == .entrance ? .findAisle : state.step
+                announce(SessionPhrases.stopItem(name(g), clock: clock))
+                return
+            }
+            state.pickReturn = state.step == .entrance ? .findAisle : state.step
+            reachItem(g)
+            return
+        }
+        guard state.pendingPick == nil else { return }
+        let changed = clock != state.itemClock
+        let due = state.now - (state.marks.lastDirectionAt ?? -Double.infinity) >= SessionTuning.itemInterval
+        state.itemClock = clock
+        state.itemDistance = distance
+        guard changed || due else { return }
+        if guide(SessionPhrases.itemAt(name(g), clock: clock, distance: distance, steps: state.distanceInSteps), dedupe: true,
+                 repeatAfter: SessionTuning.itemInterval) {
+            state.marks.lastDirectionAt = state.now
+        }
+    }
+
+    /// Gemini item finder: the item isn't in view; where to look. Search phases only, new text only, ≤ 1 per ~8 s,
+    /// never while a "Stop." waits for Standing or just after a sighting.
+    mutating func searchHint(_ hint: String) {
+        guard state.goal != nil, [.entrance, .findAisle, .inAisle].contains(state.step), state.pendingPick == nil else { return }
+        let line = SessionPhrases.searchHint(hint)
+        guard !line.isEmpty else { return }
+        if let seen = state.itemSeenAt, state.now - seen < SessionTuning.searchHintAfterSighting { return }
+        let key = normalizeText(line)
+        if let last = state.progress.lastSearchHint, last == key { return }
+        if let at = state.progress.lastSearchHintAt, state.now - at < SessionTuning.searchHintInterval { return }
+        guard guide(line) else { return }
+        state.progress.lastSearchHint = key
+        state.progress.lastSearchHintAt = state.now
+    }
+
+    /// Within reach and Standing: Pick ("Point at it with one finger."), or found for a household object.
+    mutating func reachItem(_ g: Goal) {
+        // No pointing / label check (owner decision): within reach ahead is found, for every item.
+        if !state.onDeviceItemSearch || (g.category == nil && g.visualClass != nil) {
+            // Household object (no label to read): within reach ahead is found.
+            announce(SessionPhrases.withinReach(name(g)))
+            out.append(.chime(.done))
+            out.append(.markDone(g))
+            state.foundCount += 1
+            advanceToNext()
+            return
+        }
+        enter(.pick)
+        announce(SessionPhrases.pointAtIt)
+    }
+
+    /// Motion layer → phases (level-triggered, so a change during Ask or a danger alert is picked up after it).
+    mutating func pickWhenStanding() {
+        guard let reason = state.pendingPick, !state.isWalking, !guidanceHeld else { return }
+        state.pendingPick = nil
+        switch reason {
+        case .item:
+            guard let g = state.goal, let seen = state.itemSeenAt, state.now - seen <= SessionTuning.itemMemory else { return }
+            reachItem(g)
+        case .shelf:
+            enter(.pick)
+            announce(SessionPhrases.pointAtShelf)
+        }
+    }
+
+    /// The user walked on: forget a stale "Stop." so it can be said again.
+    mutating func expireItemStop() {
+        guard state.pendingPick == .item else { return }
+        if state.now - (state.itemSeenAt ?? -Double.infinity) > SessionTuning.itemMemory { state.pendingPick = nil }
     }
 }

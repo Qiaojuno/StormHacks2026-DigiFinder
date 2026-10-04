@@ -81,8 +81,9 @@ A **danger detector runs passively** on LiDAR. It stays silent unless the user i
 - **Fallback (no LiDAR):** ultra-wide alone (or wide). Distances from box size/growth (`EstimatedDepthProvider`). Must compile and run; accuracy not required. No stairs check.
 
 ### Perception (all on-device)
+- **Current build (owner decision):** on-device object detection (YOLO) is **only for obstacles** (people, carts, bicycles, dogs, cars) and the stairs confirm. Items are found **only by Gemini** (~every 2 s while searching, tracked on device between calls). On-device item search (sign reading, aisle vote, door finding, pointing, hold-up label check) is commented out in `PerceptionController`; `SessionState.onDeviceItemSearch = false` makes every search Gemini-guided and ends it "within reach". One item at a time: a new item replaces the current one.
 - Apple Vision: text, hand pose, document edges, barcodes (only if one passes the camera; never required).
-- **YOLOv8s-oiv7** (Ultralytics, Open Images V7, 601 classes incl. Person, Cart, Door, Stairs, Shelf, Fruit, Vegetable, Banana, Apple, Bread, Milk, Cheese, Tin can, Snack) via Core ML on Stream B: danger labels, doors, stairs confirmation, context clues with no text. Export `yolo export model=yolov8s-oiv7.pt format=coreml nms=True`; fall back to `yolov8n-oiv7` if < ~8 fps. Validate `visualClasses` against model labels at load (all names in `aisle_map.json` already checked against the OIV7 list; note OIV7 spells it "Donut"). Not in OIV7: stroller, shopping basket, wet-floor sign, store displays, pallets. These are still caught by LiDAR and announced as "Obstacle ahead."
+- **YOLOv8s-oiv7** (Ultralytics, Open Images V7, 601 classes incl. Person, Cart, Door, Stairs, Shelf, Fruit, Vegetable, Banana, Apple, Bread, Milk, Cheese, Tin can, Snack) via Core ML on Stream B: danger labels, doors, stairs confirmation, context clues with no text. Export `yolo export model=yolov8s-oiv7.pt format=coreml nms=True`; fall back to `yolov8n-oiv7` if < ~8 fps. Validate `visualClasses` against model labels at load (all names in `aisle_map.json` already checked against the OIV7 list; the exported model spells it "Doughnut"; `ObjectDetectionService` maps "Donut" to it). Not in OIV7: stroller, shopping basket, wet-floor sign, store displays, pallets. These are still caught by LiDAR and announced as "Obstacle ahead."
 - **Offline product database** `products.sqlite` (built once by `tools/build_product_db.py` from Open Food Facts + USDA): barcode lookup + full-text search. Text only, no images.
 - **YOLO finds categories, never specific products.** It can say "Bottle" or "Banana", not "Starbucks dark roast". Product identity always comes from label text matched against the database. Do not fine-tune or retrain YOLO.
 - **Product memory:** feature prints of products the user confirmed; a hint for finding them faster (§5.14).
@@ -90,8 +91,8 @@ A **danger detector runs passively** on LiDAR. It stays silent unless the user i
 
 ### Audio and input
 - Output: **iPhone speaker** via `AVSpeechSynthesizer` (Premium → Enhanced → default voice). **AirPods optional** (system routing). No spatial audio.
-- Start: **"Hey Siri, open [App]"** → "What are you looking for?" → records.
-- **One talk button.** **Volume up = talk** (pauses guidance speech and listens). **Volume down = done talking** (ends the recording now). The recording also ends after ~1.5 s of silence. The offline `RequestRouter` decides what was said: goal, command, change of mind, or a question. Only questions go to Gemini, and only when online. Every talk press ends with **resume + recalculate**. Via `AVCaptureEventInteraction` (needs a running capture session, app in foreground).
+- Start: **"Hey Siri, open [App]"** → "What are you looking for? Press volume up to tell me." → volume up → records.
+- **One talk button.** **Volume up = start talking** (pauses guidance speech and records; ignored while recording). **Volume down = stop everything** (the stream ends: recording discarded, speech, camera, danger and prompts off, list cleared). A recording ends on silence like Siri; danger, stairs and backgrounding cancel a recording. The offline `RequestRouter` decides what was said: goal, command, change of mind. Anything it can't handle (question, unknown item, unmatched words) goes to Gemini silently when online (§5.11). Every talk press ends with **resume + recalculate**. Via `AVCaptureEventInteraction` (needs a running capture session, app in foreground).
 - **Screen input is ignored while walking.** The on-screen Talk button remains (§5.10).
 - On-device speech recognition (`SFSpeechRecognizer`, `requiresOnDeviceRecognition`), built-in mic. `SpeechAnalyzer` only behind `#available(iOS 26, *)`.
 - **Never record while speaking.** Stop speech → beep → listen.
@@ -106,7 +107,9 @@ A **danger detector runs passively** on LiDAR. It stays silent unless the user i
 
 ### Network
 - **Base flow: 100% offline.**
-- **Gemini, two uses only:** (1) **Ask**: the router classified the speech as a question → transcript + full-res 0.5× still; (2) **Entrance pick** (P1): one still → which door is the entrance (§5.2). Both need the phone online and use REST `generateContent` (header `x-goog-api-key`, model in `Secrets.plist`), structured JSON → Codable. No SDK, no Gemini Live.
+- **Gemini, four uses only:** (1) **Ask / assist**: anything the offline router can't handle (question, unknown item, unmatched words) → transcript + one full-res 0.5× still + short context (place, goal, phase) → `{say, findItem?}` (§5.11); (2) **Entrance pick** (P1): one still → which door is the entrance (§5.2); (3) **Grocery or not**, once at app open (+ one retry when unsure): 3 stills ~0.7 s apart in one request → `{grocery, confidence, scene}` (§5.2). All need the phone online and use REST `generateContent` (header `x-goog-api-key`, model in `Secrets.plist`), structured JSON → Codable, `thinkingConfig.thinkingLevel = "low"` (~2.3 s per small request). Model `gemini-3.8-flash` (2.5-flash is retired for new keys). No SDK, no Gemini Live.
+  (4) **Item finder** (owner decision): while a search runs online (stream on, a goal, Entrance / FindAisle / InAisle, no Ask pending), the latest Stream B frame (upright, ~1024 px wide, JPEG ~0.7) goes to `findItem` about every ~2 s (one request in flight; ~4 s while tracking; ~5 s back-off on HTTP 429 / 503 / errors, never spoken) → `{found, box_2d [ymin, xmin, ymax, xmax] 0–1000, confidence, description, hint}`; found counts at confidence ≥ 0.5. Details in §5.2 "Item in view".
+- **Privacy:** frames leave the phone only for these calls: an assist request, an entrance pick, the place check at app open, and **while searching online, a downscaled camera frame goes to Gemini about every 2 s** (item finder). No video is stored.
 - **Open Food Facts lookup** (online): items missing from the offline database (§5.2). Sends only the spoken words. `GET https://world.openfoodfacts.org/cgi/search.pl?search_terms=<words>&search_simple=1&action=process&json=1&page_size=5&fields=code,product_name,brands,quantity,categories_tags`, custom `User-Agent: DigiFinder/0.1 (<OFFContact>)`, timeout ~5 s. Limit: 10 searches/min per IP.
 
 ### Safety copy
@@ -252,10 +255,11 @@ public enum Request: Equatable {
     case question(String)
 }
 
+// Task phase (layer 2). Motion state (layer 1, Walking / Standing) comes only from `.motion(walking:)`.
+// Ask pending and the background / lost pause are overlays on SessionState (the phase is kept).
 public enum Step: Equatable {
-    case idle, askingGoal, findingEntrance, findingSignage, walkingAisle, shelfVote
-    case pointing, holdUpToCheck, findingDestination, asking, sessionDone, paused
-    public var title: String { "" }             // Wave 1: short on-screen title per case, e.g. "Finding signs"
+    case idle, entrance, findAisle, inAisle, pick, confirm
+    public var title: String { "" }             // short on-screen title per case, e.g. "Finding the aisle"
 }
 
 public enum SessionEvent: Equatable {
@@ -266,7 +270,11 @@ public enum SessionEvent: Equatable {
     case signs([AisleSign]), aisleVerdict(String?, evidence: [String]), arrivedAtAisle(clock: Int), arrivedAtDestination
     case pointed(PointedProduct?), confirmed(ProductInfo?, isGoal: Bool)
     case danger(cutRecording: Bool), dangerCleared
-    case motion(yawDegrees: Double, steps: Int, walking: Bool)       // ~2 Hz
+    case motion(yawDegrees: Double, steps: Int, walking: Bool)       // ~2 Hz; walking = MotionStateTracker (one source)
+    case itemSeen(clock: Int, distance: Float?), aisleEnd           // item in view; shelves stopped on both sides (LiDAR)
+    case searchHint(String)                                         // Gemini item finder: not in view, where to look
+    case unmatched(String, noisy: Bool)                             // words the router can't place
+    case assistAnswer(say: String?, find: Goal?), placeClassified(PlaceAnswer?)
     case positioning(PositioningHint)
     case system(SystemEvent), tick(Double)                          // time only arrives through .tick
 }
@@ -281,15 +289,16 @@ public enum SpeechPriority: Int, Comparable { case narration = 0, guidance, repl
 
 public enum Effect: Equatable {
     case say(String, SpeechPriority), stopSpeech, chime(Tone)
-    case listen(maxSeconds: Double), finishListening, cancelListening
+    case listen, finishListening, cancelListening   // records until volume down: no silence end, no time limit
     case setWork(StreamWork), setTarget(Goal?, candidates: [ProductInfo], destination: Destination?)
-    case ask(String), pickEntrance, lookupProduct(String), describeSurroundings   // ask / pickEntrance capture their own still
+    case assist(String, context: AssistContext), pickEntrance, lookupProduct(String), describeSurroundings
+    case classifyPlace                          // 3 stills → Gemini: grocery store or anywhere else (app open)
     case remember(ProductInfo), markDone(Goal)
 }
 // "Recalculate" is session-internal: clear the last-spoken de-dupe and re-derive the prompt from the next observations.
 public struct StreamWork: Equatable {
     public var text: TextLevel; public var hands: Bool; public var barcodes: Bool; public var yoloFPS: Int
-    public var shelfMode: Bool                  // §5.3: at the shelf, static things and anything < 0.7 m never alert; no flipped check
+    // No task-phase flag: obstacle alerts depend on the motion state only (§5.3).
     public enum TextLevel: Equatable { case off, fast, accurate }
 }
 
@@ -330,17 +339,22 @@ protocol PerceptionService: AnyObject {      // signs, aisles, doors, pointing, 
     func start(); func setWork(_ w: StreamWork)
     func setTarget(_ g: Goal?, candidates: [ProductInfo], destination: Destination?)
     func describeSurroundings() -> String
+    func latestUprightJPEG(maxWidth: Int) -> (jpeg: Data, frameTime: Double)?   // item finder photo (off main)
+    func trackTarget(_ box: NormRect?)          // Vision-track this contract-space box → .itemSeen; nil stops
+    var isTrackingTarget: Bool { get }
 }
 enum VoiceResult { case text(String, noisy: Bool), empty(noisy: Bool), cancelled }
-protocol VoiceInput: AnyObject { var isListening: Bool { get }; func listen(maxSeconds: Double) async -> VoiceResult; func finish(); func cancel() }
+protocol VoiceInput: AnyObject { var isListening: Bool { get }; func listen() async -> VoiceResult; func finish(); func cancel() }
 protocol FeedbackOutput: AnyObject {
     func danger(_ label: String, steer: Steer)   // vibrations first, stop speech, then the alert line; callable from any thread
     func say(_ text: String, _ p: SpeechPriority); func stopSpeech(); func chime(_ t: Tone)
     var isSpeaking: Bool { get }                 // includes VoiceOver announcements; listening waits for false (§5.10)
 }
 protocol GeminiClient {
-    func ask(_ question: String, still: Data) async throws -> String
+    func assist(_ transcript: String, context: AssistContext, still: Data) async throws -> GeminiAssist   // {say, findItem?}
     func pickEntrance(still: Data) async throws -> EntrancePick?   // nil = no entrance visible
+    func classifyPlace(stills: [Data]) async throws -> PlaceAnswer? // {grocery, confidence, scene}
+    func findItem(_ description: String, image: Data) async throws -> ItemFinding?   // {found, box, confidence, description, hint}
 }
 struct OnlineProduct { let info: ProductInfo; let categoryTags: [String] }
 protocol ProductLookupClient { func search(_ words: String) async throws -> [OnlineProduct] }   // Open Food Facts
@@ -388,13 +402,13 @@ STREAM B: 0.5× ultra-wide
 Volume up (talk) ─▶ pause speech ─▶ VoiceInput (volume down / silence ends) ─▶ RequestRouter (runner)
    ├─▶ command / destination / product goal(s) / actually / also ─▶ handled offline
    ├─▶ unknown item ─▶ online? ─▶ Open Food Facts lookup ─▶ goal   |   offline ─▶ word search
-   └─▶ question ─▶ online? ─▶ "Checking." ─▶ still ─▶ Gemini ─▶ answer
-                   offline ─▶ "I can't answer that offline…"
+   └─▶ question / unknown / unmatched ─▶ online? ─▶ still + context ─▶ Gemini (silent) ─▶ say (+ findItem → search)
+                   offline / timeout ─▶ offline path (word search / "I can't answer that offline…" / "I didn't catch that…")
    then always ─▶ resume + recalculate
 ```
 
 ### 3.6 Per-step workload
-| Step | Stream | Work | Rate |
+| Phase | Stream | Work | Rate |
 |---|---|---|---|
 | Always | A | Danger corridor, steer lanes, stairs profile, flipped check | ~30 Hz |
 | Always | B | YOLOv8s-oiv7 | ~10 fps |
@@ -404,7 +418,8 @@ Volume up (talk) ─▶ pause speech ─▶ VoiceInput (volume down / silence en
 | Confirm | B | Full-res still → text `.accurate` + barcode | on hold-up, then ~2/s |
 | "What's around?" | A + B | Signs + YOLO + depth → one answer | on request |
 | Entrance pick | B | Full-res still → Gemini | outside, online, ≤ 1 per ~5 s |
-| Ask | B | Full-res still + transcript → Gemini | when a question is routed online |
+| Ask / assist | B | Full-res still + transcript + context → Gemini | question / unknown item / unmatched words, online |
+| Place check | B | 3 full-res stills → Gemini (grocery or not) | once at app open (+ one low-confidence retry) |
 
 Each stream: own serial queue, drop while busy. Vision orientation `.right`.
 
@@ -481,42 +496,51 @@ Fix until all three are green, then a human tests each milestone's acceptance li
 
 ## 5. Behavior spec
 
-### 5.1 Main flow (FigJam Grocery store section)
+### 5.1 Main flow (two layers)
+**Layer 1, motion state** (Walking / Standing): `MotionStateTracker` (Core) over a 1.5 s window of pedometer steps and
+user-acceleration spread, with hysteresis (clearly below the low threshold → Standing, clearly above the high one →
+Walking, in between or no data → hold). It runs inside `DeviceMotionService`: Safety reads `motion.isWalking`, the
+session gets the same value in `.motion(walking:)`. No ARKit (it can't share the cameras). **It alone decides obstacle
+alerts** (§5.3). Task phases read it; they never set it.
+
+**Layer 2, task phase:** Idle → Entrance → FindAisle → InAisle → Pick → Confirm. Overlays keep the phase: Ask pending
+(speech prompts pause; motion and alerts keep running) and the background / lost pause.
 ```mermaid
 flowchart LR
-  S["Prompt Siri to open app and record"] --> G{"Identify goal (grocery)"}
-  G -->|"outside"| E["Find entrance: direct to door, announce at least 6 m before"]
-  G -->|"already inside"| F{"Find signage"}
-  E -->|"stairs"| ST["Stairs: distance + direction + number of steps"]
-  E -->|"no stairs"| D["Continue through door"]
-  ST --> F
-  D --> F
-  F -->|"in view"| SV["Signage in view"]
-  F -->|"not in view"| SN["Redirect: slowly scan environment"]
-  SN --> SV
-  SV --> DIR{"Give direction to product using signage"}
-  DIR -->|"obstacle"| OB["Redirect: haptics (stop) + verbal alert"]
-  DIR -->|"no obstacle, right aisle"| W["Walk through aisle slowly"]
-  OB --> W
-  W --> R["Read aisle signage; right category: turn to shelf"]
-  R --> P{"Direct user to point with hand"}
-  P --> C["User points: confirm object matches goal"]
-  C -->|"no"| M["Move up, down, left or right"]
-  M --> C
-  C -->|"yes"| GR["Restate goal, tell user to grab item"]
-  GR -->|"wrong item"| WR["Put it back, grab the right one"]
-  WR --> GR
-  GR -->|"right item"| CF["Confirm with user, add to cart"]
-  CF --> G
+  I["Idle"] -->|"names an item"| FA["FindAisle"]
+  I -->|"item in this aisle"| IA["InAisle"]
+  I -->|"outside"| EN["Entrance"]
+  EN -->|"You're inside"| FA
+  FA -->|"vote: target aisle / walking toward the aisle after 'Stop. Aisle 6 is at 9 o'clock.'"| IA
+  IA -->|"shelf sign or vote → 'Stop here…' → Standing"| PK["Pick"]
+  FA & IA & EN -->|"item ≤ 1.2 m ahead: Standing (or Walking → 'Stop.' → Standing)"| PK
+  PK -->|"Walking"| IA
+  PK -->|"match ≥ 0.9"| CF["Confirm"]
+  CF -->|"wrong item"| PK
+  CF -->|"right: next in this aisle"| IA
+  CF -->|"right: next elsewhere"| FA
+  CF -->|"nothing left"| I
 ```
-Danger (§5.3) and stairs (§5.4) run underneath every step.
+Destinations (checkout, customer service) search inside FindAisle; arrival → Idle. The shelf vote is a sub-state of
+FindAisle. No timer moves the user between phases. Phase changes are spoken only when the user must act. Only obstacle
+danger uses haptics (phase changes, matches and wrong items are voice only; tones such as the done chime are fine).
+Danger (§5.3) and stairs (§5.4) run underneath every phase.
 
 ### 5.2 Steps
 
 **Start**
-- "Hey Siri, open [App]" → both streams start → "What are you looking for?" → beep → record.
+- "Hey Siri, open [App]" → both streams start → **grocery or not** (below) → the place line → "What are you looking for? Press volume up to tell me." → volume up → beep → record until volume down.
 
-**Identify goal (offline)** — the runner runs `RequestRouter` on the transcript and sends `.routed(…)` or `.notUnderstood(noisy:)`:
+**Grocery store or anywhere else (Gemini, once at app open)**
+- When the camera runs, wait (max ~5 s) for a good moment: phone upright (gravity mostly along device −y), still (low rotation rate), frame not dark, LiDAR not blocked (median depth > ~0.5 m when depth exists); else use the best frames. Then 3 stills ~0.7 s apart in **one** `generateContent` request → `{grocery, confidence 0–1, scene (2–4 words)}`.
+- Prompt: "These photos are from a camera on a blind person's chest. Is this inside a grocery store or supermarket (aisles of food products, shelves, price tags)? Anywhere else — home, office, campus, library, school, outdoors, another kind of shop — is false. Give your confidence 0–1 and a 2–4 word scene description."
+- **General is the default (owner decision).** The store flow runs only on a grocery "yes" with confidence ≥ 0.7 (or entering through a store entrance, or "store mode"). Confidence < 0.7 → one retry with 3 new photos; still < 0.7, no answer, offline or not configured → general. While the check runs: general behaviour (no sign prompts).
+- **No place announcement (owner decision).** A request made while the check runs gets "Loading.", then "Okay, now looking for <item>." once it's decided; otherwise the normal "Looking for <item>.". The place itself (grocery or not) is never spoken.
+- Said once, before the opening question: "You're in a grocery store." / "This looks like a university library." (empty scene: "You're not in a grocery store.") / "I couldn't tell if this is a grocery store." Manual setting → no announcement.
+- **Store** → the sign / aisle flow below. **General** (anywhere else) → no sign prompts, no step-back vote, no aisle end: only item sightings and the item rule; "Turn slowly." every ~15 s; ~60 s with no sighting → "I can't find phone nearby. Try another spot." + chime → next goal.
+- Manual overrides win and skip the check: Settings "Nearby mode" and "it's nearby" → general; "store mode" → store. Entering through the Entrance phase ("You're inside") sets store. No refresh timer (owner decision).
+
+**Identify goal (offline)** — the runner runs `RequestRouter` on the transcript and sends `.routed(…)`, `.unmatched(words, noisy:)` (words it can't place) or `.notUnderstood(noisy:)` (empty):
 | Type | Examples | Result |
 |---|---|---|
 | Command | "stop" / "skip item", "repeat", "that's all", "what's around?" / "where am I", "quieter", "more detail", "switch" / "add it" | Handled directly. "Read the label" is a question |
@@ -525,9 +549,10 @@ Danger (§5.3) and stairs (§5.4) run underneath every step.
 | Several products | "coffee and milk" | Queue: "I'll find coffee first, then milk." |
 | Change of mind | "actually, peanut butter" / "no, peanut butter instead" | Replace current goal: "Okay, peanut butter instead." |
 | Addition | "also milk" / "add milk" | Queue: "Added milk to the list." |
-| Bare product while a goal is active | "milk" (while finding coffee) | Ask: "Switch to milk, or add it?" → auto-listen ~5 s → "switch" replaces, "add" queues. No clear answer → "I'll add milk to the list." With no active goal it just starts |
+| Bare product while a goal is active | "milk" (while finding coffee) | Ask: "Switch to milk, or add it?" (the user presses volume up to answer) → "switch" replaces, "add" queues. No clear answer (or ~12 s silence) → "I'll add milk to the list." With no active goal it just starts |
 | Unknown item | "toothpaste", "where is the bathroom" | Not in the offline database (see below) |
-| Question | "is this gluten free?", "what does this sign say?", "how much is this?" | Online: Ask (§5.11). Offline: "I can't answer that offline. I can still find products, checkout, or staff." |
+| Question | "is this gluten free?", "what does this sign say?", "how much is this?" | Online: Gemini, silently (§5.11). Offline: "I can't answer that offline. I can still find products, checkout, or staff." |
+| Unmatched words | anything else with real words | Online: Gemini, silently (§5.11). Offline: "I didn't catch that. Say the product name." |
 
 **Router rule, in order:**
 1. Commands (whole-utterance phrases such as "switch", "add it", "help" are commands or destinations only when said alone), then destinations ("help" / "information" only when said alone, so "help me find peanut butter" is a product).
@@ -538,15 +563,35 @@ Danger (§5.3) and stairs (§5.4) run underneath every step.
 **Not understood:** empty or filler-only transcript → "I didn't catch that. Say the product name." High mic level → "Sorry, I didn't catch that. It's noisy here." (Also when the words were unmatched and the mic level was high.)
 
 **Unknown item** (not in the offline database):
-- **Online:** "I don't have tahini in my list. Checking online." → Open Food Facts search (§2) → first Canada/US hit → map its category tags to an aisle with `Catalog.aisle(forOffTags:)`.
+- **Online:** silently to Gemini (§5.11) → speak its `say`; `findItem` starts a search (resolved like a spoken product, else a word-search goal). No `findItem` → Open Food Facts search (§2) → first Canada/US hit → map its category tags to an aisle with `Catalog.aisle(forOffTags:)`.
   - Aisle found → normal goal: "Found it: Kicking Horse coffee. Looking for the coffee aisle."
   - No aisle → word-search goal, with the hit's category names (e.g. "tahini", "sesame pastes", "spreads") added as `signWords`.
-- **Offline, or nothing found online:** word-search goal: "I don't have tahini in my list. I'll look for the word on signs and labels."
+- **Offline, Gemini timeout, or nothing found online:** word-search goal: "I don't have tahini in my list. I'll look for the word on signs and labels."
 - **Word search:** signs are matched against the spoken words + `signWords`; at the shelf, labels are matched against the spoken words (no database candidates; confirmation reads the label back: "This says Cedar's tahini."). Not found (§5.12) → "Say 'find staff' for help."
 - Open Food Facts is food only, so non-food items (toothpaste, batteries) always end in word search.
 
 - **Goal candidates:** database products in the goal's aisle matching the words the user said; pointing and confirmation compare against these. Goal brand/variant/form come only from the user's words (§3.3), so "milk" accepts any brand.
 - **Inside vs outside:** default **inside**. Outside only when YOLO sees outdoor classes (Car, Building, Tree, Street light) and no Shelf for ~3 s, or the user says "I'm outside". The user can say "I'm inside" any time.
+
+**Item in view: the global rule** (Entrance, FindAisle, InAisle; replaces the old "looking nearby" step and its timer)
+- `PerceptionItemFinder` runs in signs mode: the goal's YOLO class (`Goal.visualClass`: Banana, Mug, Mobile phone…) or label text matching the goal (signs and price tags excluded) → `.itemSeen(clock, distance)`.
+- Within ~1.2 m at 11–1 o'clock: **Standing** → Pick: "Point at it with one finger." **Walking** → once: "Stop. Coffee at 12 o'clock." → Pick when the motion state becomes Standing (if the item was seen in the last ~5 s). Household objects (no label: `category == nil`, `visualClass != nil`) end there instead: "Phone is right in front of you, within reach." + done chime.
+- Farther: "Coffee at 2 o'clock, about 3 meters." (on a new direction, else at most every ~3 s).
+- **Gemini item finder** (online, owner decision; YOLO OIV7 + label OCR miss many items): `SessionGeminiFinder` (runner) asks
+  Gemini about every ~2 s whether the goal (brand, product, variant, form, or "a household object") is in the latest Stream B
+  frame, in grocery and general places alike. The on-device finder keeps running; whichever sees it first reports.
+  - Prompt: "This photo is from a camera on a blind person's chest. Find: <goal>. If it is visible, give its bounding box as box_2d [ymin, xmin, ymax, xmax] on a 0–1000 scale, your confidence 0–1, and a 3–6 word description of what you see. If it is not visible, set found false and give one short hint (at most 12 words) about where it is likely to be relative to this photo, using clock positions (12 = straight ahead, 3 = right, 9 = left), or an empty hint."
+  - **Found** (confidence ≥ 0.5): Perception follows the box frame to frame on Stream B (`VNTrackObjectRequest` +
+    `VNSequenceRequestHandler`, upright via `CaptureOrientation`, flip setting included), clock from `PerceptionFrameGeometry`,
+    LiDAR at the box center → the usual `.itemSeen`, so every item rule above applies unchanged. Nothing extra is spoken.
+    Gemini is asked again every ~4 s while tracking (a "not found" stops the tracker), and at once when tracking is lost
+    (tracker confidence < 0.3 or the box leaves the frame).
+  - **Not found:** its hint → `.searchHint` → spoken as guidance ("Coffee sign at 10 o'clock.") only when it differs from the
+    last one, at most every ~8 s, not within ~3 s of a sighting, only in Entrance / FindAisle / InAisle; dropped while the
+    user talks, an answer is pending, a "Stop." waits, or the stream is stopped. No haptics.
+  - The loop stops on stop / stream off / Ask pending / leaving the search phases / a new goal (late answers dropped);
+    429 / 503 / errors back off to ~5 s silently. Offline or no Gemini: on-device only.
+- Household words map to OIV7 classes (`MatchingHousehold`): phone, glasses, remote, mug, cup, bottle, bag, book, laptop, headphones, watch… Keys, wallet and chargers have no class: labels only.
 
 **If outside: find the entrance (P1). Gemini picks the door, on-device tracking guides to it**
 - **Online pick:** "Looking for the entrance." → full-res 0.5× still, sent **upright** (orientation applied, so image left = user's left) → `pickEntrance` → `EntrancePick` (entrance x, door kind, cart corral x, short note).
@@ -557,26 +602,27 @@ Danger (§5.3) and stairs (§5.4) run underneath every step.
 - **Lost the door** (no Door box near the expected heading for ~5 s) → new photo → ask Gemini again.
 - **No internet:** YOLO "Door" boxes + text on/near each door ("Entrance", "Enter", "In", "Exit", "Out", "Push", "Pull"). Entrance text → that door. Exit text → skip. **No sign on any door** → nearest door, honestly: "Door at 1 o'clock, about 8 meters. I can't see an entrance sign." At an exit-only door: "This door says exit. Another door at 10 o'clock."
 - No door for ~30 s: "I can't find a door. Ask someone nearby."
-- **Entrance step ends** when the door is within ~1.5 m and then shelves or signs are seen (or ~5 s pass): "You're inside." → find signage.
+- **Entrance phase ends** with "You're inside" (outside detection clears, or the user says so): "You're inside." → FindAisle (place = store). Outside detected in Idle (store or unknown place) also enters Entrance.
 
-**Find signage (Stream B)**
+**FindAisle (Stream B; store flow)**
 - Aisle signs ("Aisle 6: Coffee, Tea") and section signs ("Produce", "Bakery", "Dairy", "Checkout", "Customer Service").
 - In view → direction. Not in view → "I can't see any signs. Turn slowly." (gyro yaw, tick per text region) → "Aisle sign, 2 o'clock."
-- Overhead / out of view (product text on both sides, no sign ~10 s) → "Take two steps back." → shelf vote (§5.7) → "Walk to the end of the aisle; the signs are usually there."
+- No readable sign for ~10 s (any sign read resets the wait) → "Take two steps back." → once Standing → shelf vote (§5.7, a sub-state of FindAisle) → back to FindAisle after both sides ("Walk to the end of the aisle; the signs are usually there."), or at once when a target sign appears.
 - No text (produce/bakery/dairy) → YOLO context clues (§5.7).
 - Lost (~30 s without a known sign after a detour) → "I've lost track. Walk ahead slowly and I'll look for signs."
 
 **Give direction using signage**
 - Goal category vs `aisleWords`. "9 o'clock, aisle 6, coffee and tea." Not on visible signs → "Coffee isn't on these signs. Keep turning slowly." Remembered signs → "Coffee was aisle 6, at 6 o'clock behind you."
-- **Arrival:** the camera only sees ~10:30–1:30, so a sign is never seen at 9 or 3 o'clock. Perception remembers the target sign's last bearing and distance, dead-reckons with yaw + pedometer (~0.7 m per step), and sends `arrivedAtAisle` when the predicted bearing passes ~70° to the side (or the aisle opening appears beside the user in depth) → "Stop. Aisle 6 is at 9 o'clock." → "Turn to 9 o'clock." (speech only)
-- Right aisle → "This is the coffee aisle. Walk through slowly."
+- **Arrival:** the camera only sees ~10:30–1:30, so a sign is never seen at 9 or 3 o'clock. Perception remembers the target sign's last bearing and distance, dead-reckons with yaw + pedometer (~0.7 m per step), and sends `arrivedAtAisle` when the predicted bearing passes ~70° to the side (or the aisle opening appears beside the user in depth) → "Stop. Aisle 6 is at 9 o'clock." (speech only; still FindAisle)
+- InAisle when the vote confirms the target aisle, or when the user walks again heading within ~45° of the remembered aisle bearing (motion yaw) → "This is the coffee aisle. Walk through slowly." No turn timer.
 
-**Walk the aisle**
-- Read signs and labels while walking; confirm by sign or vote → "Coffee is at 9 o'clock. Turn to the shelf."
-- Not seen → keep walking to the end, scan the other side on the way back.
+**InAisle**
+- Walk slowly; read shelf signs. Shelf sign names the item → "Stop here. Turn to the shelf at 9 o'clock."; the vote locates the item's section → "Stop here. Turn to the shelf." → Pick when the motion state becomes Standing (at once if already standing). The old ~4 s "turn to the shelf" timer is gone.
+- **Aisle end:** Safety sees the shelves stop on both sides in the depth points (`AisleEndTracker`: shelves both sides ≥ 1 s, then open both sides ≥ 0.6 s while walking) → `.aisleEnd`, used after ≥ 5 steps since entering InAisle; pedometer backup ~20 m. → "End of aisle. Item not found here." "Say 'find staff' for help, or 'next' for the next item." Thresholds: verify on device.
 
-**Point at the shelf (Stream B)**
-- "Point at the shelf with one finger. Start at chest height."
+**Pick (Stream B)**
+- "Point at the shelf with one finger. Start at chest height." (from a shelf sign) / "Point at it with one finger." (from a sighting).
+- The user walks on (Walking) → back to the phase Pick came from (InAisle, or FindAisle for a sighting before the aisle), silently.
 - OCR product regions scored vs goal candidates, memory hint (§5.14), LiDAR shelf distance ("The shelf is about one step ahead").
 - Price-tag filter: text that's mostly prices (`$`, `/kg`, `/lb`, `¢`, digits) at the shelf edge isn't a product.
 
@@ -584,17 +630,17 @@ Danger (§5.3) and stairs (§5.4) run underneath every step.
 - Pointed spot = index tip + (tip − DIP) × k → product region.
 - No → "That's Pike Place. Move right." (up/down/left/right, ≤ 1 per second). Target not seen yet → "Not it. Move slowly to the right."
 - Variant nearby → "This is Dark Roast, 340 grams. There's also a 680 gram one."
-- Yes → grab.
+- Yes (match ≥ 0.9) → Confirm.
 
-**Grab and check (no barcode hunting)**
+**Confirm (no barcode hunting)**
 - "That's Starbucks Dark Roast, whole bean. Grab it." → "Hold it up in front of you."
 - Full-res still → `.accurate` OCR → match vs candidates (brand, name, size). A visible barcode wins.
 - Unclear ~4 s → "Turn it slowly." ~8 s → "Try holding it a little farther away."
-- Wrong → "That's ground, not whole bean. Put it back and grab the one to its right." → pointing.
+- Wrong → "That's ground, not whole bean. Put it back." → Pick (voice only).
 
 **Confirm and add to cart**
 - "Got it: Starbucks Dark Roast, whole bean. Put it in your cart." + chime → save to memory → mark done.
-- Queue not empty → "Next: milk." If the next item is in the same aisle: "Tea is in this aisle too." and go straight to the shelf. Queue empty → "What's next?" → auto-listen ~5 s. Silence / "that's all" → "Shopping done. You found 3 items." + chime → idle.
+- Queue not empty → "Next: milk." → FindAisle. Next item in the same aisle: "Tea is in this aisle too." → InAisle (the item rule jumps to Pick once it's within reach; never straight to pointing). Queue empty → Idle, "What's next?" (volume up to answer). ~12 s silence / "that's all" → "Shopping done. You found 3 items." + chime.
 
 ### 5.3 Passive danger detection (always on, safety lane)
 
@@ -606,20 +652,24 @@ Danger (§5.3) and stairs (§5.4) run underneath every step.
 5. Closing speed over ~0.5 s; TTC = distance ÷ closing speed.
 6. Label = YOLO box on Stream B overlapping the projected nearest points; else "Obstacle".
 
-**Emergency (2 consecutive frames):** distance < 1.0 m and closing > 0.2 m/s, **or** TTC < 1.5 s with distance < 3 m. Not while rotating > 1.5 rad/s (filters lanyard swing). **Stationary rule:** user still → static objects never alert.
+**Threat level, not proximity (owner decision).** The app supplements the cane, so being close never alerts by itself. Each obstacle in the path (|x| ≤ 0.35 m) is scored from its own motion and what YOLO says it is:
+- **High → vibrate + speak:** something moving toward the user on its own: closing speed minus the user's walking (~1 m/s) ≥ 0.4 m/s for known movers (person, cart, stroller, wheelchair, bicycle, dog…) or ≥ 0.8 m/s for unlabeled shapes, contact within 2.5 s and 4 m.
+- **Low → speak only, no vibration:** while walking, a chest/head-height obstacle that doesn't reach the floor (open cabinet door, sign, shelf edge; the cane passes under it), contact within 2 s and 2.5 m.
+- **None:** walls, shelves, tables, boxes, standing people the cane will touch, things off to the side, anything within 0.8 m of a user who is standing or sitting still.
+- 3 consecutive frames; never while rotating > 1.5 rad/s.
 
-**Steer:** lanes 0.4–0.8 m left/right, same height band, to ~5 m; clear if nearest ≥ obstacle + 0.8 m. Both clear → away from obstacle side; one → that side; both blocked → "stop"; not visible (< 30 points) → unknown.
+**Steer:** scan headings ±5° steps up to the LiDAR's visible field (~±25° on the lanyard) for the nearest 0.7 m-wide gap open ~1 m past the obstacle (2–3 m), closest to straight ahead, ties away from the obstacle. Spoken as a clock position (11 / 1 at least). Nothing open → "stop. Turn slowly."
 
 **Alert sequence**
-1. 2–3 strong vibrations (Core Haptics, ~150 ms pulses, ~100 ms apart).
+1. High threat only: 2–3 strong vibrations (Core Haptics, ~150 ms pulses, ~100 ms apart).
 2. Cancel any recording and stop any speech (a cancelled recording sends no event).
-3. "<Object> ahead, steer <left/right>" / "<Object> ahead, stop" / "<Object> ahead".
-4. If a recording was cut → "Say that again." → beep → listen.
-5. Still closing ~2 s later → vibrations once more (no speech).
-6. Path clears → **recalculate** the current step and speak a fresh prompt.
+3. "<Object> ahead, steer to <N> o'clock" / "<Object> ahead, stop. Turn slowly." / "<Object> ahead" (no distance: short line).
+4. If a recording was cut → "Say that again." (the user presses volume up to answer).
+5. Still closing ~2 s later → vibrations once more (no speech; high threats only).
+6. Way straight ahead open ≥ 2.5 m for 0.5 s (within 20 s of the alert) → "Clear ahead, about N meters. Walk straight." Then **recalculate** the current step and speak a fresh prompt.
 7. Cooldown ~5 s per obstacle.
 
-**Shelf mode** (`StreamWork.shelfMode`, on from "Turn to the shelf" through pointing and hold-up): the shelf is expected, so static surfaces never alert; anything closer than ~0.7 m (the user's hand, the held item) is ignored; the phone-flipped check is off; only objects moving toward the user (TTC < 1.5 s) alert. LiDAR distance to the shelf feeds "The shelf is about one step ahead."
+**Motion state only (owner decision):** the rules above depend on Walking / Standing (`motion.isWalking`) and nothing else. Walking → movers approaching + head-height overhangs; Standing → only movers approaching, and nothing within 0.8 m (which covers the user's hand and the held item at the shelf). The task phase and the place (store or not) never change alerts: there is no shelf mode. Stairs and the phone-flipped check run only while walking. LiDAR distance to the shelf (Pick) feeds "The shelf is about one step ahead."
 
 **Fallback (no LiDAR):** YOLO box tracking, `TTC ≈ Δt·h/Δh`, middle 50% band. Compiles; accuracy not required.
 
@@ -652,14 +702,14 @@ Danger (§5.3) and stairs (§5.4) run underneath every step.
 ### 5.8 Positioning prompts
 | Signal | Prompt |
 |---|---|
-| Pitch toward floor/ceiling | "Tilt the phone up / down" |
+| Pitch toward floor/ceiling | Never spoken (the phone hangs on a lanyard; owner decision) |
 | Text clipped at edges | "Step back a little" |
 | Text too small | "Move closer" |
 | Fast rotation / blur | "Slow down" |
 | No hand ~3 s while pointing | "Point in front of the phone, at chest height" |
 | Shelf < 0.3 m (LiDAR) | "Step back a little" |
 | Frame too dark | "It's too dark for me to read here." |
-| Depth almost all < 0.2 m, or dark frame while upright (not in shelf mode) | **"Phone may be flipped around."** (max once per 30 s) |
+| Depth almost all < 0.2 m, or dark frame while upright (walking only) | **"Phone may be flipped around."** (max once per 30 s) |
 
 ### 5.9 Information density (Focus only)
 - **Always Focus:** speaks only the flow, danger and stairs. No background narration, no mode switch. Changes the app makes on its own (walking ↔ at the shelf) are silent.
@@ -669,26 +719,27 @@ Danger (§5.3) and stairs (§5.4) run underneath every step.
 ### 5.10 Controls
 | Input | Behavior |
 |---|---|
-| "Hey Siri, open [App]" | Open, ask for the goal, record |
-| **Volume up: talk** | Pauses everything that speaks (like a car's push-to-talk button): stops speech, holds guidance prompts, beep, listens. Never cuts a danger or stairs line, and can't stop a VoiceOver announcement: it waits until `feedback.isSpeaking` is false (max ~3 s), then beeps. Detection keeps running. Goals, change of mind, additions, commands and questions all go through this one button. Pressed again while listening = done (a confused press never restarts the recording) |
-| **Volume down: done talking** | Ends the recording now. Otherwise it ends after ~1.5 s of silence (max ~10 s). Ignored when not listening |
-| After every recording | Router handles it (§5.2), then the paused step **resumes and recalculates** from fresh frames |
-| Screen Talk button | Same as volume up, **only when the user is still**. Ignored while walking (chest rubbing). Pressed while recording → pause the mic, say "Press the volume down button to finish," resume the mic |
+| "Hey Siri, open [App]" | Opens **stopped** (owner decision): danger and checks off (camera on for the volume buttons and the live view); says only "Press volume up to start." The first volume up starts the stream, records, and runs the grocery check; the place line follows the request, once per app open |
+| **Volume up: start talking** | Starts a recording (and the stream, if stopped): stops speech, beep, records. Ends on **silence** like Siri (~1.5 s after the last word, ~6 s if nothing is said), then the transcript is routed. Ignored while recording. While the stream runs, a newly named item is **added to the list** ("actually X" still replaces) |
+| **Volume down: stop everything** | Owner decision: the **stream** ends at once. Recording discarded, all speech cut (danger included), danger and perception off, item and list cleared, no prompts or timers. Silent. The camera keeps running (the volume buttons only reach the app while a capture session runs, and Home shows the live view). Volume up starts it again |
+| Cancels | A danger alert or stairs line cuts a recording ("Say that again."), and so does backgrounding |
+| After every recording | Router (§5.2) or Gemini (§5.11), then the phase **resumes and recalculates** from fresh frames |
+| Screen record button | Shows stop (square) while the stream runs: tap = volume down (everything stops). When stopped: tap = volume up (only when the user is still) |
 | Other screen controls | Ignored while walking; drag-to-hear + double-tap when still |
-| Auto-listen ~5 s | After questions the app asks ("What's next?", "Switch to milk, or add it?", "Say that again."), after the line finishes |
+| Questions the app asks | "What's next?", "Say that again.": no auto-recording; the user presses volume up to answer. ("Switch to milk, or add it?" is gone: a new item mid-search is added) |
 
 Danger alerts preempt everything (§5.3). "Repeat" is a voice command. The volume buttons belong to the app while it runs (verify, §10), so set the phone volume high before starting.
 
-**Changing your mind:** press volume up → "actually peanut butter" → "Okay, peanut butter instead." Press volume up → "also milk" → "Added milk to the list." Just "milk" → "Switch to milk, or add it?"
+**Changing your mind:** volume up → "actually peanut butter" → volume down → "Okay, peanut butter instead." Volume up → "also milk" → volume down → "Added milk to the list." Just "milk" → "Switch to milk, or add it?"
 
-### 5.11 Ask mode (Gemini, online bonus)
-- **Trigger:** the router classifies a talk recording as a question, and the phone is online. Say "Checking." so the user knows it went online.
-- **Input:** transcript + full-res 0.5× still taken after routing, so it shows what the user is holding when they finish talking (~2000 px, JPEG ~0.8).
-- **While waiting:** guidance stays paused (Step `.asking`); danger and stairs still run and preempt.
-- **Output:** ≤ 2 short sentences. Dietary/allergen answers end with "Check with staff to confirm." No safety instructions or walking directions.
-- **Timeout** ~6 s → "I couldn't get an answer. Try again later."
-- **After the answer:** chime → resume the paused step → recalculate from fresh frames (direction may have changed).
-- **Privacy:** a frame leaves the phone only for an online question ("Checking.") or an online entrance pick ("Looking for the entrance."). No video is stored.
+### 5.11 Ask mode (Gemini, seamless fallback)
+- **Trigger:** anything the offline router can't handle: a question, an unknown item, or unmatched words, while online with Gemini configured. Nothing is said first (no "Checking.", no "Checking online.", no "I didn't catch that").
+- **Input:** transcript + one upright full-res 0.5× still (~2000 px, JPEG ~0.8) + short context: place (grocery store / anywhere else / unknown), current goal, phase.
+- **Output:** JSON `{say: ≤ 2 short spoken sentences, findItem?: a thing to look for}`. Only `say` is spoken; `findItem` starts a search (resolved like a spoken product or household word, else a word-search goal). Dietary/allergen answers end with "Check with staff to confirm." No safety instructions or walking directions.
+- **While waiting:** Ask pending is an overlay: the phase is kept, speech prompts pause; motion, danger and stairs keep running and preempt.
+- **Offline / not configured / timeout (~6 s + the still) / failure:** the offline path, silently: unknown item → word-search goal; question → "I can't answer that offline. I can still find products, checkout, or staff."; unmatched words → "I didn't catch that. Say the product name." (an empty recording says that too).
+- **After the answer:** resume the phase → recalculate from fresh frames.
+- **Privacy:** a frame leaves the phone only for an assist request, an entrance pick ("Looking for the entrance."), the place check at app open (3 stills, plus 3 more on a low-confidence retry), and while searching online, when a downscaled camera frame goes to Gemini about every 2 s (item finder, §5.2). No video is stored.
 
 ### 5.12 Session endings
 | Ending | Spoken |
@@ -696,7 +747,9 @@ Danger alerts preempt everything (§5.3). "Repeat" is a voice command. The volum
 | Item done | "Got it… Put it in your cart." + chime → "Next: X." / "What's next?" |
 | Session done | "Shopping done. You found 3 items." + chime |
 | Goal cancelled ("stop") | "Stopped." + chime → next queued goal or "What's next?" |
-| Not found (the aisle walked both ways, or ~90 s in the right aisle with no match) | "I didn't find it. It may be out of stock. Say 'find staff' for help." + chime → next queued goal |
+| Aisle end with no match (LiDAR shelves stop on both sides after ≥ 5 steps; pedometer backup ~20 m) | "End of aisle. Item not found here." "Say 'find staff' for help, or 'next' for the next item." (stays InAisle) |
+| Not found (~90 s in Pick / Confirm with no match) | "I didn't find it. It may be out of stock. Say 'find staff' for help." + chime → next queued goal |
+| "Next" / "I didn't find it" | Stop the goal ("Stopped.") → next queued goal, or Idle "What's next?" |
 | Lost (~60 s with no sign, label or hand related to the goal after "I've lost track…") | "Guidance paused. Press volume up when you're ready." + chime |
 
 ### 5.13 Setup (one screen)
@@ -719,9 +772,9 @@ Speech speed and voice (English only); units (meters/steps); tones/danger-haptic
 |---|---|
 | Screen lock | Idle timer disabled for the whole session, so the phone stays on. If it locks anyway (side button): background audio says "Guidance paused, camera off." On unlock: "Back. Danger detection is on." + recalculate |
 | Phone call / Siri / backgrounded | Same as lock |
-| Battery 20% / 10% | "Battery low, 20 percent." (once each) |
-| Thermal serious | "Phone is getting hot. Guidance may slow down." Throttle YOLO rate, then OCR rate; danger last |
-| Thermal critical | "Phone is too hot. Only danger alerts are on." Keep danger + stairs only |
+| Battery 20% / 10% | Not announced (owner decision) |
+| Thermal serious | Silent (owner decision). Throttle YOLO rate, then OCR rate; danger last |
+| Thermal critical | Silent (owner decision). Keep danger + stairs only |
 | AirPods disconnect / route change | Continue on the speaker; repeat the last prompt |
 | Phone flipped | "Phone may be flipped around." |
 | Camera / mic denied (MVP) | One spoken line: "Camera access is off. Ask someone to turn it on in Settings." |
@@ -938,7 +991,7 @@ Code must tolerate a missing `products.sqlite` (fall back to `extraProducts`) an
 
 ### M8: Ask, "What's around?", UI, system events — ~2.5 h (P1)
 - [ ] "What's around?" one-shot answer + quieter / more detail **[8]**
-- [ ] Ask for routed questions: "Checking." → still → Gemini → resume + recalculate; offline refusal **[8]**
+- [ ] Gemini assist for questions / unknown items / unmatched words (silent) → still + context → `{say, findItem}` → resume + recalculate; offline paths **[8]**
 - [ ] Unknown items: Open Food Facts lookup online **[7]**; word search on signs and labels **[5]**
 - [ ] System events (§5.16) **[7]**
 - [ ] Setup sheet + walkthrough **[8]**; drag-to-hear surface **[6]**; Licenses **[10]**
@@ -1568,7 +1621,7 @@ let package = Package(
 ---
 
 ## 12. Decision log
-1. Digital guide dog, supplements the cane. 2. iPhone speaker; AirPods optional; no spatial audio. 3. Haptics danger only; stairs never vibrate. 4. Danger cuts recordings, then "Say that again." 5. 0.5× sees, LiDAR measures; no camera switching. 6. Danger corridor waist to head; steer left/right/stop. 7. Chest-height lanyard. 8. Background stairs check, spoken. 9. Offline product database (filtered), label-first confirmation. 10. On-device product memory. 11. Base flow offline; Gemini only for routed questions (Ask) and the entrance pick. 12. Entrance: Gemini picks the door from one photo, offline YOLO + LiDAR guide to it; no internet → door text + nearest door. 13. Clock directions. 14. YOLO context clues with no text. 15. Staff and checkout via signs. 16. One talk button: volume up = talk, volume down = done; router picks offline vs Ask; every recording ends with resume + recalculate. 17. Screen ignored while walking; screen Talk button hints at volume down while recording. 18. Speech priority danger > stairs > reply > guidance > narration. 19. Goal queue; "actually X" replaces, "also X" adds. 20. Phone stays awake; lock → "Guidance paused, camera off." 21. Battery and heat announced once. 22. No screen dimming (demo). 23. Minimal permission handling (MVP). 24. YOLO finds categories only; product identity from label text + database; no YOLO training. 25. Focus is the only mode; "What's around?" on request; "quieter" / "more detail" change wordiness. 26. No face blurring in Ask photos (team call). 27. Items missing from the database: Open Food Facts lookup online, word search offline. 28. Bare item mid-trip → "Switch to milk, or add it?". 29. Basket or pulled cart; a pushed cart isn't supported. 30. Human Xcode setup before Wave 1; secrets in a runtime plist.
+1. Digital guide dog, supplements the cane. 2. iPhone speaker; AirPods optional; no spatial audio. 3. Haptics danger only; stairs never vibrate. 4. Danger cuts recordings, then "Say that again." 5. 0.5× sees, LiDAR measures; no camera switching. 6. Danger corridor waist to head; steer left/right/stop. 7. Chest-height lanyard. 8. Background stairs check, spoken. 9. Offline product database (filtered), label-first confirmation. 10. On-device product memory. 11. Base flow offline; Gemini only for the assist fallback (questions, unknown items, unmatched words), the entrance pick and the app-open place check. 12. Entrance: Gemini picks the door from one photo, offline YOLO + LiDAR guide to it; no internet → door text + nearest door. 13. Clock directions. 14. YOLO context clues with no text. 15. Staff and checkout via signs. 16. One talk button: volume up only starts, volume down only stops (no silence end, no time limit); router picks offline vs Gemini; every recording ends with resume + recalculate. 17. Screen ignored while walking; the record button stops a recording at any time. 18. Speech priority danger > stairs > reply > guidance > narration. 19. Goal queue; "actually X" replaces, "also X" adds. 20. Phone stays awake; lock → "Guidance paused, camera off." 21. Battery and heat announced once. 22. No screen dimming (demo). 23. Minimal permission handling (MVP). 24. YOLO finds categories only; product identity from label text + database; no YOLO training. 25. Focus is the only mode; "What's around?" on request; "quieter" / "more detail" change wordiness. 26. No face blurring in Ask photos (team call). 27. Items missing from the database: Gemini (then Open Food Facts) online, word search offline. 31. Two layers: motion state (Walking / Standing, pedometer + accelerometer hysteresis) decides alerts; task phases (Idle, Entrance, FindAisle, InAisle, Pick, Confirm) never do; no timer-based phase guesses. 28. Bare item mid-trip → "Switch to milk, or add it?". 29. Basket or pulled cart; a pushed cart isn't supported. 30. Human Xcode setup before Wave 1; secrets in a runtime plist.
 
 ---
 

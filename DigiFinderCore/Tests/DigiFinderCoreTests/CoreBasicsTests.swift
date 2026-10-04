@@ -53,7 +53,7 @@ final class CoreBasicsTests: XCTestCase {
         XCTAssertNil(nearestInCorridor(Array(wall.prefix(39))))
         XCTAssertTrue(isEmergency([(t: 0, d: 1.4), (t: 0.5, d: 0.9)], rotationRate: 0))
         XCTAssertFalse(isEmergency([(t: 0, d: 0.9), (t: 0.5, d: 0.9)], rotationRate: 0))   // stationary rule
-        XCTAssertEqual(alertPhrase(label: "cart", steer: .left), "Cart ahead, steer left")
+        XCTAssertEqual(alertPhrase(label: "cart", steer: .clock(11)), "Cart ahead, steer to 11 o'clock")
     }
 
     func testSpeechQueuePreemptsAndDropsStale() {
@@ -63,5 +63,27 @@ final class CoreBasicsTests: XCTestCase {
         XCTAssertTrue(q.push(SpeechLine(text: "Cart ahead", priority: .danger, createdAt: 1)))
         _ = q.push(SpeechLine(text: "old", priority: .narration, createdAt: 1))
         XCTAssertNil(q.next(now: 10))
+    }
+
+    /// Flip-camera setting: the sensor ↔ portrait mapping and left/right flip, and round-trip in both modes.
+    func testUpsideDownCameraFlipsMappingAndDirections() {
+        defer { Geometry.cameraUpsideDown = false }
+        let k = Mat3.intrinsics(fx: 1000, fy: 1000, cx: 960, cy: 720)
+        for flipped in [false, true] {
+            Geometry.cameraUpsideDown = flipped
+            let back = Geometry.toSensorPixels(NormPoint(x: 0.3, y: 0.6), width: 1920, height: 1440)
+            let n = Geometry.fromSensorPixels(back, width: 1920, height: 1440)
+            XCTAssertEqual(n.x, 0.3, accuracy: 1e-9); XCTAssertEqual(n.y, 0.6, accuracy: 1e-9)
+            // The right side of the upright picture is always to the user's right.
+            XCTAssertGreaterThan(Geometry.degreesRight(portraitX: 0.9, intrinsics: k, sensorHeight: 1440), 0)
+            XCTAssertLessThan(Geometry.degreesRight(portraitX: 0.1, intrinsics: k, sensorHeight: 1440), 0)
+            XCTAssertEqual(Geometry.degreesRight(portraitX: 0.5, intrinsics: k, sensorHeight: 1440), 0, accuracy: 1e-9)
+        }
+        Geometry.cameraUpsideDown = false
+        let a = Geometry.fromSensorPixels((x: 0, y: 0), width: 1920, height: 1440)
+        Geometry.cameraUpsideDown = true
+        let b = Geometry.fromSensorPixels((x: 0, y: 0), width: 1920, height: 1440)
+        XCTAssertEqual(a, NormPoint(x: 1, y: 0))        // buffer origin: top right normally
+        XCTAssertEqual(b, NormPoint(x: 0, y: 1))        // bottom left when the phone hangs upside down
     }
 }

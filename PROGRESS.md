@@ -59,7 +59,7 @@ Read this first after a restart or compaction, then continue from "Next".
 - `yolov8s-oiv7.mlpackage` exported and copied to `DigiFinder/Resources/`. coremltools has no Python 3.14 build
   ("BlobWriter not loaded"), so the export ran in `build_out/yolo/venv39` (system Python 3.9). `.venv` (3.14) has duckdb + huggingface_hub.
 - `products.sqlite`, `*.mlpackage`, `Secrets.plist` are gitignored; `categories.json` and `synonyms.json` are committed.
-- `Secrets.example.plist` uses `gemini-2.5-flash` as the model placeholder; confirm the current model name when filling `Secrets.plist`.
+- `Secrets.example.plist` uses `gemini-2.5-flash` as the model placeholder; that model is retired for new keys — use `gemini-3.8-flash` (verified 2026-10-04).
 
 ## Build check
 ```
@@ -85,8 +85,8 @@ xcodebuild -scheme DigiFinder -destination 'generic/platform=iOS Simulator' -der
       `describeSurroundings()` on the main thread.
     - UI: runner should adopt `UISessionDriving` (typed requests, debug events, walkthrough, settings, drag-to-hear);
       modules adopt `UIDebugSnapshotSource` for overlay values.
-- [ ] Phase 4: Wave 3 integration — **next** (one agent in `$SCRATCH/df-integration`, merge whole tree back)
-- [ ] Phase 5: review and hand-off
+- [x] **Phase 4: Wave 3 done.** Contract changes applied (file cleared), SessionRunner, live/simulator wiring, README Setup. 158 tests, both builds green; Simulator launch + typed "coffee" verified by the agent.
+- [x] **Phase 5 done.** Independent review: 9 bugs + 2 wording issues; fixed all but the customer-service desk distance (signs carry no distance). Owner changes: start prompts "Press volume up to tell me." instead of auto-listening; Simulator DF_TYPED_REQUEST hook removed. 161 tests, both builds green, Simulator launch OK. Next: owner phone testing (§8 acceptance, §10 verify). M9 not started.
 
 ## Wave 2 decisions given to agents
 - Test ownership: Core-logic owns `RouterTests.swift`, `CoreBasicsTests.swift` and new `Matching*/Geometry*/Speech*/Routing*Tests.swift`;
@@ -102,3 +102,68 @@ xcodebuild -scheme DigiFinder -destination 'generic/platform=iOS Simulator' -der
 1. When a batch-1 agent reports: rsync its owned folders back, append CONTRACT_CHANGES entries, run the build checks.
 2. Then batch 2. Tell the owner when Capture + Safety are both in and building (phone danger test).
 3. Phase 4 (Wave 3 integration), Phase 5 (review). Suggest a commit message to the owner after each phase.
+
+## Owner changes after Phase 5 (2026-10-04)
+- Danger = threat level, not proximity (`Geometry/GeometryThreat.swift`): only movers approaching (person, cart…) vibrate;
+  chest/head-height overhangs are spoken only; everything else is the cane's job. 3-frame rule. Clock steering
+  (`openHeading`), "stop. Turn slowly.", "Clear ahead, about N meters. Walk straight." (`SessionEvent.pathClear`),
+  distances in alerts/doors/desks (`AisleSign.distance`). Stairs + flipped only while walking. Tilt prompts never.
+  Model "Doughnut" renamed "Donut" at load. §5.3 / §5.8 updated.
+- UI: Home = full-screen live 0.5× preview (`FrameSource.attachPreview`, explicit multi-cam preview connection) +
+  camera-style record button + Home / Settings. Settings page holds setup, licenses and the debug overlay.
+  Verify on device: multi-cam cost with the preview connection.
+- Stairs down: the "floor ends, nothing beyond" rule is gone (shiny floors / grazing angle made it fire constantly);
+  down now needs a sharp edge onto a visible lower surface AND YOLO "Stairs" within 1 s. Debug button top-right on Home.
+- YOLO output filtered to an allowlist (`ObjectDetectionService.essentialLabels` + catalog visualClasses): people/movers,
+  Door, Stairs, Shelf, Car/Tree/Street light (outside check). Everything else (Building, Office building…) is dropped
+  after detection. All names verified against the exported model's 601 classes.
+- Look first + nearby mode: every search starts in Step `.lookingNearby` (~5 s; signs hand over), `SessionEvent.itemSeen`
+  from `PerceptionItemFinder` (YOLO class via `Goal.visualClass`, or goal label text), nearby mode (Settings toggle /
+  "it's nearby" / "store mode") skips signs. Household objects (`MatchingHousehold`, 55 words → OIV7 classes, all in the
+  allowlist) end at "within reach". Battery and heat lines removed (throttling stays silent). §5.2 / §5.16 updated.
+- Shopping state machine refactor (2026-10-04): two layers. **Motion state** (Walking / Standing) = Core
+  `Motion/MotionStateTracker` (1.5 s window of pedometer steps + user-acceleration spread, hysteresis, thresholds in
+  `MotionTuning`, verify on device) inside `DeviceMotionService`; one source for Safety (`motion.isWalking`) and the
+  session (`.motion(walking:)`); it alone decides alerts (threat-level rules; shelf mode deleted from StreamWork /
+  Corridor / ThreatInput / DangerDetector / flip check). **Task phases** `Step`: idle, entrance, findAisle, inAisle,
+  pick, confirm; Ask pending + background/lost pause are overlays. Item rule in every search phase (≤ 1.2 m ahead:
+  Standing → Pick, Walking → "Stop. X at N o'clock." → Pick on Standing). Removed timers: look-first ~5 s, in-aisle
+  ~4 s "turn to the shelf", 6 s turn fallback, turn-back not-found. Aisle end: Core `AisleEndTracker` in Safety →
+  `.aisleEnd` (≥ 5 steps in aisle; pedometer backup 20 m). Place check at app open: 3 stills after a good-photo gate →
+  Gemini `{grocery, confidence, scene}`, retry once < 0.7, place line before the opening question; `general` = anywhere
+  else. Recording: volume up only starts, volume down only stops, no silence end / time limit, no auto-listen.
+  Gemini assist replaces Ask: questions / unknown items / unmatched words go silently with a still + context →
+  `{say, findItem}`. 195 Core tests; device + Simulator builds green. §2, §3.3, §5 updated.
+- Flip camera (lanyards that hang upside down): top-left "Flip" on Home → Confirm/Cancel alert, read aloud; saved in
+  settings. `Geometry.cameraUpsideDown` flips every sensor ↔ portrait mapping and left/right in Core;
+  `CaptureOrientation` (app) drives Vision orientation (.right/.left), stills, debug images and the preview angle (90/270).
+- Place default inverted: general unless Gemini says grocery (≥ 0.7) / store entrance / "store mode".
+- Recording vs stream (owner decision): recording ends on silence (~1.5 s after speech, ~6 s if nothing said) and is routed;
+  volume down / the stop button ends the STREAM: recording discarded, all speech cut, camera + danger + perception off,
+  item and list cleared, silent (`SessionEvent.donePressed` → `Effect.setStreaming(false)`). Volume up restarts. A new
+  item mid-search is added (no "Switch or add?").
+- App opens stopped ("Press volume up to start."); the first volume up starts the stream + recording + the grocery
+  check (once per app open; place line after the request). Freeze fix: AVAudioSession speak↔listen switches run on a
+  serial background queue (`FeedbackAudioSession.switchQueue`); SpeechFeedback/ToneService getters no longer
+  `queue.sync` from the main thread.
+- Recording freeze fixes: cancelled recordings now send `.recordingCancelled` (session stopped waiting forever →
+  volume up was ignored); 30 s stuck-recording safety net; capture sessions no longer manage the app audio session
+  (`automaticallyConfiguresApplicationAudioSession = false`) and restart after interruptions/runtime errors (frozen
+  preview while recording); record button always enabled (no walking guard).
+- Camera always runs while the app is open (volume buttons need a running capture session; live view). Stopped = danger/perception/prompts off only.
+- Gemini item finder (YOLO OIV7 + label OCR miss many items): while searching online (stream on, goal, Entrance /
+  FindAisle / InAisle, no Ask pending), `Flow/SessionGeminiFinder` sends the latest Stream B frame (upright, 1024 px,
+  JPEG 0.7) to `GeminiClient.findItem` ~every 2 s (one in flight; 4 s while tracking; 5 s back-off on 429 / 503 / errors,
+  silent). Found (≥ 0.5) → `PerceptionService.trackTarget` → `Perception/PerceptionTargetTracker` (Vision object tracking)
+  → normal `.itemSeen`; lost → ask at once. Not found → `SessionEvent.searchHint` (spoken as guidance when new, ≤ 1 per
+  ~8 s, never while talking / Ask / stopped). Debug: "Gemini finder" note line + "Gemini target" box. Model
+  `gemini-3.8-flash` with `thinkingLevel: low` (2.5-flash retired for new keys). Privacy wording §2 / §5.11 updated.
+  Verify on device: tracker drift (the box is from a frame ~2 s old), cost/quota at ~20–30 requests/min.
+- Place never announced: "Loading." while the check runs, then "Okay, now looking for <item>."
+- One item at a time: a newly named item always replaces the current one (no list; several items → the first).
+- Gemini is the only item finder (every ~2 s while searching, also while tracking). On-device item search is COMMENTED OUT
+  in `PerceptionController` (text reading, signs, aisle vote, doors, pointing, hold-up label check, arrival, outside),
+  and `SessionState.onDeviceItemSearch` is false in the app: every search is Gemini-guided and ends "within reach".
+  YOLO allowlist = obstacle classes + Stairs only. Store-flow tests keep running with the flag on (harness `onDevice:`).
+- Gemini finder photos 640 px / JPEG 0.6 (~1.6 s per answer vs 4–9 s at 1024 px); Gemini timeout 10 s. Key with $4 prepaid cap verified 2026-10-04.
+- Gemini keys: `GeminiAPIKey` (main) + optional `GeminiFallbackAPIKey` in Secrets.plist. A refused key (401/402/403/429) falls back to the other for the same request and is skipped for 5 min (`NetworkKeyChooser`).

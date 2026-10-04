@@ -10,7 +10,7 @@ import DigiFinderCore
 ///
 /// Queues: session (configuration, start/stop, stills), Stream B video, depth (= the capture queue `onDepth`
 /// runs on), debug 1× video. Each delegate queue is serial; late frames are discarded while a consumer is busy.
-class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Sendable {
+class CaptureSessionSource: NSObject, FrameSource, @unchecked Sendable {
     let sessionQueue = DispatchQueue(label: "DigiFinder.capture.session", qos: .userInitiated)
     let videoQueue = DispatchQueue(label: "DigiFinder.capture.streamB", qos: .userInitiated)
     let depthQueue = DispatchQueue(label: "DigiFinder.capture.depth", qos: .userInteractive)
@@ -50,6 +50,7 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
 
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
+        if let o = orientationObserver { NotificationCenter.default.removeObserver(o) }
         pressureObservations.forEach { $0.invalidate() }
         if let session = setup?.session, session.isRunning { session.stopRunning() }
         CaptureIdleTimer.hold(ObjectIdentifier(self), false)
@@ -66,8 +67,6 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
         return c
     }
 
-    var streamB: AsyncStream<FrameB> { streamBRelay.stream }
-
     var onDepth: ((DepthFrame) -> Void)? {
         get { depthRelay.handler }
         set { depthRelay.handler = newValue }
@@ -83,6 +82,67 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
                 }
                 stills.capture(from: output) { cont.resume(with: $0) }
             }
+        }
+    }
+
+    /// Main-screen preview of Stream B. Kept weakly; connected on the session queue once configured.
+    private weak var previewLayer: AVCaptureVideoPreviewLayer?
+    private var previewConnected = false
+
+    func attachPreview(_ layer: AVCaptureVideoPreviewLayer) {
+        layer.videoGravity = .resizeAspectFill
+        sessionQueue.async { [weak self, weak layer] in
+            guard let self, let layer else { return }
+            self.previewLayer = layer
+            self.previewConnected = false
+            self.connectPreviewIfReady()
+        }
+    }
+
+    /// Session queue. Multi-cam sessions have no implicit connections, so the preview gets an explicit connection to
+    /// the ultra-wide video port; a single-camera session connects automatically. If the session can't take the extra
+    /// connection (capture cost), the preview stays empty and capture is unaffected.
+    /// Session queue: the preview's rotation follows the flip-camera setting (90°, or 270° upside down).
+    private var previewConnection: AVCaptureConnection?
+    private var orientationObserver: NSObjectProtocol?
+
+    private func applyPreviewAngle() {
+        let angle = CaptureOrientation.previewAngle
+        if let c = previewConnection, c.isVideoRotationAngleSupported(angle) { c.videoRotationAngle = angle }
+    }
+
+    private func observeOrientation() {
+        guard orientationObserver == nil else { return }
+        orientationObserver = NotificationCenter.default.addObserver(forName: CaptureOrientation.didChange, object: nil,
+                                                                     queue: nil) { [weak self] _ in
+            self?.sessionQueue.async { self?.applyPreviewAngle() }
+        }
+    }
+
+    private func connectPreviewIfReady() {
+        observeOrientation()
+        guard !previewConnected, let layer = previewLayer, let s = setup else { return }
+        let session = s.session
+        if let multi = session as? AVCaptureMultiCamSession {
+            let input = multi.inputs.compactMap { $0 as? AVCaptureDeviceInput }.first { $0.device == s.streamBDevice }
+            guard let port = input?.ports(for: .video, sourceDeviceType: s.streamBDevice.deviceType,
+                                          sourceDevicePosition: s.streamBDevice.position).first else { return }
+            layer.setSessionWithNoConnection(multi)
+            let c = AVCaptureConnection(inputPort: port, videoPreviewLayer: layer)
+            multi.beginConfiguration()
+            if multi.canAddConnection(c) {
+                multi.addConnection(c)
+                previewConnection = c
+                applyPreviewAngle()
+                previewConnected = true
+            }
+            multi.commitConfiguration()
+            refreshCosts()
+        } else {
+            layer.session = session
+            previewConnection = layer.connection
+            applyPreviewAngle()
+            previewConnected = true
         }
     }
 
@@ -120,7 +180,7 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
         }
     }
 
-    // MARK: CaptureControl
+    // MARK: Rates, thermal, calibration, debug
 
     var onCapabilitiesChange: ((CaptureCapabilities) -> Void)? {
         get { lock.withLock { capabilitiesHandler } }
@@ -140,6 +200,8 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
     var rates: CaptureRates { lock.withLock { effectiveRatesLocked() } }
 
     func makeStreamB() -> AsyncStream<FrameB> { streamBRelay.makeStream() }
+
+    var streamBCalibration: CaptureCalibration.StreamB? { calibration.streamB }
 
     var debugInfo: CaptureDebugInfo {
         var i = lock.withLock { () -> CaptureDebugInfo in
@@ -184,6 +246,9 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
             return nil
         }
         let session = AVCaptureSession()
+        // The app's audio session belongs to speech + recording (FeedbackAudioSession). If capture managed it too,
+        // switching to record mode would interrupt the camera (frozen preview while the user talks).
+        session.automaticallyConfiguresApplicationAudioSession = false
         let video = AVCaptureVideoDataOutput()
         let photo = AVCapturePhotoOutput()
 
@@ -252,6 +317,7 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
                     if info.lastError == nil { info.lastError = "Camera configuration failed" }
                 }
             }
+            connectPreviewIfReady()
             refreshCosts()
             notifyCapabilities()
         }
@@ -306,7 +372,9 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
             self?.updateInfo { $0.interruption = reason.map(Self.describe) ?? "unknown" }
         })
         observers.append(nc.addObserver(forName: AVCaptureSession.interruptionEndedNotification, object: s.session, queue: nil) {
-            [weak self] _ in self?.updateInfo { $0.interruption = nil }
+            [weak self] _ in
+            self?.updateInfo { $0.interruption = nil }
+            self?.sessionQueue.async { self?.runIfWanted() }         // make sure the camera is running again
         })
         for device in [s.streamBDevice, s.depthDevice].compactMap({ $0 }) {
             pressureObservations.append(device.observe(\.systemPressureState, options: [.initial, .new]) { [weak self] d, _ in
@@ -330,7 +398,7 @@ class CaptureSessionSource: NSObject, FrameSource, CaptureControl, @unchecked Se
             $0.lastError = error?.localizedDescription ?? "Capture runtime error"
             $0.isRunning = false
         }
-        guard error?.code == .mediaServicesWereReset else { return }
+        // Restart whenever capture is still wanted (not only after a media-services reset).
         sessionQueue.async { [weak self] in self?.runIfWanted() }
     }
 

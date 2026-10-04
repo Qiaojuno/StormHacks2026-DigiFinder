@@ -12,17 +12,17 @@ enum CaptureImageRenderer {
     static let context = CIContext(options: [.cacheIntermediates: false])
 
     /// Orientation that makes a photo upright in portrait: its EXIF orientation when the capture connection was
-    /// rotated, else `.right` (sensor landscape → portrait).
+    /// rotated, else the sensor → portrait turn. Turned another 180° when the phone hangs upside down.
     static func portraitOrientation(exif: CGImagePropertyOrientation?) -> CGImagePropertyOrientation {
-        guard let exif, exif != .up else { return .right }
-        return exif
+        guard let exif, exif != .up else { return CaptureOrientation.visionOrientation }
+        return CaptureOrientation.isUpsideDown ? CaptureOrientation.rotated180(exif) : exif
     }
 
-    static func upright(_ pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .right, maxWidth: CGFloat? = nil) -> CGImage? {
+    static func upright(_ pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = CaptureOrientation.visionOrientation, maxWidth: CGFloat? = nil) -> CGImage? {
         render(CIImage(cvPixelBuffer: pixelBuffer), orientation: orientation, maxWidth: maxWidth)
     }
 
-    static func upright(_ image: CGImage, orientation: CGImagePropertyOrientation = .right, maxWidth: CGFloat? = nil) -> CGImage? {
+    static func upright(_ image: CGImage, orientation: CGImagePropertyOrientation = CaptureOrientation.visionOrientation, maxWidth: CGFloat? = nil) -> CGImage? {
         render(CIImage(cgImage: image), orientation: orientation, maxWidth: maxWidth)
     }
 
@@ -62,6 +62,8 @@ enum CaptureImageRenderer {
                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
         }
-        return result ?? nil
+        guard let image = result ?? nil else { return nil }
+        // Phone hanging upside down: the portrait mapping above is the normal one, so turn the heatmap over.
+        return CaptureOrientation.isUpsideDown ? render(CIImage(cgImage: image), orientation: .down, maxWidth: nil) : image
     }
 }

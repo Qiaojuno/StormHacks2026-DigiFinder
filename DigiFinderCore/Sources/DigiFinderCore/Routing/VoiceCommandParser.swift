@@ -10,7 +10,10 @@ public enum VoiceCommandParser {
         add(.stop, ["stop", "skip", "skip item", "skip it", "skip this", "skip that", "skip this one", "skip this item",
                     "skip the item", "next item", "cancel", "cancel it", "cancel this", "cancel that", "never mind",
                     "nevermind", "stop looking", "stop searching", "stop it", "forget it", "forget that",
-                    "forget about it", "don t bother", "move on", "give up", "i give up"])
+                    "forget about it", "don t bother", "move on", "give up", "i give up",
+                    // After "End of aisle. … or 'next' for the next item." / "I didn't find it" (§5.12)
+                    "next", "next one", "go to the next item", "i didn t find it", "didn t find it", "i can t find it",
+                    "can t find it", "not here", "it s not here"])
         add(.thatsAll, ["that s all", "that is all", "that s it", "that is it", "that will be all", "that ll be all",
                         "that s everything", "that s all thanks", "that s all thank you", "that s it thanks",
                         "i m done", "i am done", "i m all done", "all done", "we re done", "we are done",
@@ -36,6 +39,11 @@ public enum VoiceCommandParser {
         add(.outside(false), ["i m inside", "i am inside", "inside", "we re inside", "we are inside", "i m indoors",
                               "i m in the store", "i am in the store", "i m inside the store", "i am inside the store",
                               "i m already inside", "already inside", "i m inside now", "i m in the store now"])
+        add(.nearby(true), ["it s nearby", "it is nearby", "nearby", "it s close", "it s close by", "close by",
+                            "in this room", "it s in this room", "it s in the room", "i m at home", "i am at home",
+                            "at home", "look nearby", "search nearby", "find it nearby", "home mode", "nearby mode"])
+        add(.nearby(false), ["store mode", "i m in a store", "i am in a store", "i m at the store",
+                             "shopping mode"])
         add(.finishTalking, ["done", "finished", "i m finished", "over", "done talking", "i m done talking",
                              "finished talking", "send", "send it"])
         add(.switchGoal, ["switch", "switch it", "switch to it", "switch to that", "switch that", "switch goals",

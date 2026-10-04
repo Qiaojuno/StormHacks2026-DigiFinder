@@ -1,8 +1,25 @@
 // Every line the session speaks. Wording follows §5; keep it in sync with the spec.
+import Foundation
 
 enum SessionPhrases {
     // MARK: Start and goals (§5.2, §5.10)
-    static let askGoal = "What are you looking for?"
+    static let askGoal = "What are you looking for? Press volume up to tell me."
+    /// App open (owner decision: starts stopped).
+    static let pressToStart = "Press volume up to start."
+    // Where the user is (once at app open, before the opening question).
+    static let inGroceryStore = "You're in a grocery store."
+    /// Said instead of "Looking for X." while the grocery check runs (owner decision), then `nowLookingFor`.
+    static let loading = "Loading."
+    static func nowLookingFor(_ name: String) -> String { "Okay, now looking for \(name)." }
+    static let notInGroceryStore = "You're not in a grocery store."
+    static let couldntTellPlace = "I couldn't tell if this is a grocery store."
+    /// "This looks like a university library."
+    static func looksLikePlace(_ scene: String) -> String {
+        let s = scene.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !s.isEmpty else { return notInGroceryStore }
+        let article = "aeio".contains(s.first ?? "x") ? "an" : "a"
+        return "This looks like \(article) \(s)."
+    }
     static func lookingFor(_ name: String) -> String { "Looking for \(name)." }
     static func instead(_ name: String) -> String { "Okay, \(name) instead." }
     static func added(_ name: String) -> String { "Added \(name) to the list." }
@@ -17,7 +34,6 @@ enum SessionPhrases {
     static let notCaughtNoisy = "Sorry, I didn't catch that. It's noisy here."
 
     // MARK: Unknown items (§5.2)
-    static func unknownOnline(_ words: String) -> String { "I don't have \(words) in my list. Checking online." }
     static func unknownOffline(_ words: String) -> String {
         "I don't have \(words) in my list. I'll look for the word on signs and labels."
     }
@@ -26,9 +42,9 @@ enum SessionPhrases {
     static func found(_ name: String) -> String { "Found it: \(name)." }
 
     // MARK: Ask (§5.11)
-    static let checking = "Checking."
-    static let noAnswer = "I couldn't get an answer. Try again later."
     static let offlineQuestion = "I can't answer that offline. I can still find products, checkout, or staff."
+    /// §0: no Secrets.plist.
+    static let onlineHelpOff = "Online help isn't set up."
 
     // MARK: Controls (§5.9, §5.10)
     static let sayAgain = "Say that again."
@@ -46,13 +62,38 @@ enum SessionPhrases {
     static let lostTrack = "I've lost track. Walk ahead slowly and I'll look for signs."
     static let guidancePaused = "Guidance paused. Press volume up when you're ready."
 
+    // MARK: Item in view (global rule) and not-a-store search
+    static let turnSlowly = "Turn slowly."
+    static func itemAt(_ name: String, clock: Int, distance: Float?, steps: Bool) -> String {
+        "\(name.prefix(1).uppercased() + name.dropFirst()) at \(clock) o'clock" + about(distance, steps: steps) + "."
+    }
+    /// Within reach, Standing → Pick.
+    static let pointAtIt = "Point at it with one finger."
+    /// Within reach while Walking (once); Pick follows when the user stands.
+    static func stopItem(_ name: String, clock: Int) -> String { "Stop. \(cap(name)) at \(clock) o'clock." }
+    static func withinReach(_ name: String) -> String {
+        "\(name.prefix(1).uppercased() + name.dropFirst()) is right in front of you, within reach."
+    }
+    static func notFoundNearby(_ name: String) -> String { "I can't find \(name) nearby. Try another spot." }
+    static let nearbyOn = "Okay, looking nearby."
+    static let nearbyOff = "Okay, store mode."
+
     // MARK: Destinations (§5.6)
     static let toCustomerService = "I'll take you to customer service. You can also ask anyone nearby."
     static let goingToCheckout = "Going to checkout."
     static func stillOnList(_ names: [String]) -> String { "You still have \(list(names)) on your list." }
-    static func checkoutsAhead(_ clock: Int) -> String { "Checkouts ahead, \(clock) o'clock." }
+    static func checkoutsAhead(_ clock: Int, distance: Float? = nil, steps: Bool = false) -> String {
+        "Checkouts ahead, \(clock) o'clock" + about(distance, steps: steps) + "."
+    }
     static let cashierHelp = "A cashier can help you scan and pay."
-    static func serviceDesk(_ clock: Int) -> String { "Customer service desk, \(clock) o'clock." }
+    static func serviceDesk(_ clock: Int, distance: Float? = nil, steps: Bool = false) -> String {
+        "Customer service desk, \(clock) o'clock" + about(distance, steps: steps) + "."
+    }
+    /// ", about 3 meters" when known.
+    static func about(_ d: Float?, steps: Bool) -> String {
+        guard let d, d.isFinite, d > 0 else { return "" }
+        return ", about \(distance(d, steps: steps))"
+    }
     static let destinationNotFound = "I can't find it. Ask anyone nearby for help."
     static let atCheckout = "You're at the checkout."
     static let atCustomerService = "You're at customer service."
@@ -81,7 +122,6 @@ enum SessionPhrases {
         let head = number.map { "Stop. Aisle \($0) is at \(clock) o'clock" } ?? "Stop. The \(name) aisle is at \(clock) o'clock"
         return categories.isEmpty ? head + "." : head + ", " + list(categories.map { $0.lowercased() }) + "."
     }
-    static func turnTo(_ clock: Int) -> String { "Turn to \(clock) o'clock." }
     static func thisIsAisle(_ name: String) -> String { "This is the \(name) aisle." }
     static let walkSlowly = "Walk through slowly."
     static func seeOnBothSides(_ things: [String]) -> String { "I see \(list(things)) on both sides." }
@@ -95,10 +135,21 @@ enum SessionPhrases {
         "This looks like \(other), not \(target). Go back to the main aisle."
     }
     static let unsure = "I'm not sure yet. Walk slowly ahead."
-    static func shelfAt(_ name: String, clock: Int) -> String { "\(cap(name)) is at \(clock) o'clock. Turn to the shelf." }
-    static let turnToShelf = "Turn to the shelf."
+    /// The shelf sign names the item; Pick follows when the user stands.
+    static func stopHereShelf(clock: Int) -> String { "Stop here. Turn to the shelf at \(clock) o'clock." }
+    /// The vote located the item's section (no side known).
+    static let stopHere = "Stop here. Turn to the shelf."
+    static let aisleEnd = "End of aisle. Item not found here."
+    static let aisleEndOffer = "Say 'find staff' for help, or 'next' for the next item."
 
     // MARK: Shelf (§5.2)
+    /// "The shelf is about one step ahead." (LiDAR, ~0.7 m per step).
+    static func shelfAhead(_ meters: Float) -> String {
+        let n = max(1, Int((meters / SessionTuning.stepLengthMeters).rounded()))
+        let words = ["one", "two", "three", "four", "five"]
+        let count = n <= words.count ? words[n - 1] : "\(n)"
+        return "The shelf is about \(count) \(n == 1 ? "step" : "steps") ahead."
+    }
     static let pointAtShelf = "Point at the shelf with one finger. Start at chest height."
     static func grab(_ text: String) -> String { "That's \(text). Grab it." }
     static func grabWithAlternative(_ text: String, _ alternative: String) -> String { "This is \(text). \(alternative) Grab it." }
@@ -109,9 +160,8 @@ enum SessionPhrases {
     static let holdFarther = "Try holding it a little farther away."
     static func gotIt(_ name: String) -> String { "Got it: \(name). Put it in your cart." }
     static func thisSays(_ name: String) -> String { "This says \(name). Put it in your cart." }
-    static func wrongItem(_ name: String, not goal: String) -> String {
-        "That's \(name), not \(goal). Put it back and grab the right one."
-    }
+    /// "That's ground, not whole bean. Put it back." `difference` names what differs (`wrongItemLine`).
+    static func wrongItem(_ difference: String) -> String { "\(difference) Put it back." }
 
     // MARK: Entrance (§5.2)
     static let lookingForEntrance = "Looking for the entrance."
@@ -128,22 +178,24 @@ enum SessionPhrases {
     }
     static func cartCorral(_ clock: Int) -> String { "Cart corral at \(clock) o'clock." }
     static let cantSeeEntrance = "I can't see the entrance. Turn slowly."
-    static func entranceAhead(_ distance: Float, clock: Int) -> String {
-        "Entrance ahead, about \(meters(distance)), \(clock) o'clock."
+    static func entranceAhead(_ distance: Float, clock: Int, steps: Bool = false) -> String {
+        "Entrance ahead, about \(self.distance(distance, steps: steps)), \(clock) o'clock."
     }
-    static func doorNoSign(clock: Int, distance: Float?) -> String {
-        let at = distance.map { "Door at \(clock) o'clock, about \(meters($0))." } ?? "Door at \(clock) o'clock."
+    static func doorNoSign(clock: Int, distance: Float?, steps: Bool = false) -> String {
+        let at = distance.map { "Door at \(clock) o'clock, about \(self.distance($0, steps: steps))." } ?? "Door at \(clock) o'clock."
         return at + " I can't see an entrance sign."
     }
-    static func exitDoor(otherClock: Int) -> String { "This door says exit. Another door at \(otherClock) o'clock." }
+    static func exitDoor(otherClock: Int, distance: Float? = nil, steps: Bool = false) -> String {
+        "This door says exit. Another door at \(otherClock) o'clock" + about(distance, steps: steps) + "."
+    }
     static let noDoor = "I can't find a door. Ask someone nearby."
     static let inside = "You're inside."
 
     // MARK: Stairs (§5.4). Never shortened by verbosity.
-    static func stairs(_ o: StairsObservation) -> String {
+    static func stairs(_ o: StairsObservation, steps: Bool = false) -> String {
         var parts = ["Stairs going \(o.up ? "up" : "down")"]
         if let n = o.steps, n > 0 { parts.append("\(o.more ? "more than" : "about") \(n) \(n == 1 ? "step" : "steps")") }
-        parts.append(meters(o.distance))
+        parts.append(steps ? distance(o.distance, steps: true) + " away" : meters(o.distance))   // not confused with stair steps
         parts.append("12 o'clock")
         return parts.joined(separator: ", ") + "."
     }
@@ -179,9 +231,24 @@ enum SessionPhrases {
         return items.count == 1 ? last : items.dropLast().joined(separator: ", ") + " and " + last
     }
 
+    /// Meters, or steps (~0.7 m) when the user chose steps in setup.
+    static func distance(_ d: Float, steps: Bool) -> String {
+        guard steps else { return meters(d) }
+        let n = max(1, Int((d / SessionTuning.stepLengthMeters).rounded()))
+        return n == 1 ? "1 step" : "\(n) steps"
+    }
+
     static func meters(_ d: Float) -> String {
         let n = max(1, Int(d.rounded()))
         return n == 1 ? "1 meter" : "\(n) meters"
+    }
+
+    /// Gemini's hint as a spoken sentence: trimmed, capitalized, ending with a period.
+    static func searchHint(_ hint: String) -> String {
+        var t = hint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "" }
+        if let last = t.last, !".!?".contains(last) { t += "." }
+        return cap(t)
     }
 
     static func cap(_ s: String) -> String { s.prefix(1).uppercased() + s.dropFirst() }
