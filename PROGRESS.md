@@ -74,27 +74,18 @@ xcodebuild -scheme DigiFinder -destination 'generic/platform=iOS Simulator' -der
 - [x] **Phase 1: Wave 1 done.** Package added by the owner; all three build checks green. Contracts frozen.
   Derived data must live outside ~/Desktop (Desktop file metadata breaks Simulator codesign: "detritus not allowed").
 - [x] Phase 2: data jobs done (see Data).
-- [ ] Phase 3: Wave 2 (8 module subagents) — **in progress**
-  - Batch 1 (running): Core-logic, Core-session, Capture, Data
-    - Capture: **merged**, device + Simulator builds green. Adds `CaptureControl` (capability callback, thermal/rates,
-      `makeStreamB()` fan-out, debug snapshots) and `CaptureFactory.makeBest()`. `streamB` is single-consumer and
-      `onDepth` is a single closure: batch-2 agents must use `makeStreamB()` and chain onto `onDepth` (keep the previous
-      handler; Safety's work runs first, Perception's handler only stores the latest frame).
-    - Core-logic: **merged**, `swift test` 73/73 green. Adds `RequestRouter(…, synonyms:)` and `routeWithChange`
-      (CONTRACT_CHANGES: `Request.products` needs a GoalChange), `SpeechPriorityQueue.enqueue`, clock/TTC/dead-reckoning helpers.
-    - Data: **merged**, device + Simulator builds green. Adds `DataGoalResolver(products:catalog:)` with `goals(for:)`
-      (router productSearch) and `candidates(for:limit:)`; `Catalog.synonyms`; `ProductMemory(directory:)`; hint threshold 0.4 (verify on device).
-    - Core-session: **merged**. Full Core suite 150/150 green; device + Simulator builds green. `.tick` is an absolute
-      monotonic clock (first tick = reference); runner rules in CONTRACT_CHANGES "Flow runtime semantics". Adds
-      `ShoppingSession(catalog:destinations:)`. Own-wording lines to review: "Push door." / "Pull door.",
-      "Okay, still looking for X.", "I can't see much around you.", mic-denied line.
-  - Batch 2 (running): Safety, Perception, Voice-Feedback-Network-System (copies made after Capture/Core-logic/Data merges)
-    and UI (copy made after Core-session merge). Notes they were briefed with:
-    use `(frames as? CaptureControl)?.makeStreamB()` for Stream B and chain onto `frames.onDepth` (keep the previous handler);
-    Perception owns YOLO (`ObjectDetectionService`), Safety only reads `detector.latest`; Safety also emits
-    `.positioning(.phoneFlipped)` (max once per 30 s, not in shelf mode); Perception adds `remember(_ p: ProductInfo)` that saves
-    the last confirmed crop to ProductMemory (runner calls it for `Effect.remember`); router search = `DataGoalResolver.goals(for:)`.
-- [ ] Phase 4: Wave 3 integration
+- [x] **Phase 3: Wave 2 done.** All 8 modules merged (Capture, Core-logic, Data, Core-session, UI, Voice-Feedback-Network-System,
+  Safety, Perception). No stubs left. `swift test` 150/150, device + Simulator builds green.
+  - Integration notes from agents (all detailed in CONTRACT_CHANGES.md):
+    - `AppEnvironment.live()` must use `CaptureFactory.makeBest()`; runner must call `motion.start()`, `perception.start()` then
+      `safety.start()` (Safety's depth work runs first), map capability/mic denial to SystemEvents, `.tick` = absolute monotonic clock.
+    - `listen()` plays its own beep: the session/runner must not add `.chime(.beep)` before `.listen`.
+    - Safety's 2 s vibration-only repeat needs Feedback to adopt `SafetyPulseOutput` (Feedback added a vibrate-only call too).
+    - Perception: `remember(_:)` for Effect.remember; real model label is "Doughnut" (aliases mapped); don't call
+      `describeSurroundings()` on the main thread.
+    - UI: runner should adopt `UISessionDriving` (typed requests, debug events, walkthrough, settings, drag-to-hear);
+      modules adopt `UIDebugSnapshotSource` for overlay values.
+- [ ] Phase 4: Wave 3 integration — **next** (one agent in `$SCRATCH/df-integration`, merge whole tree back)
 - [ ] Phase 5: review and hand-off
 
 ## Wave 2 decisions given to agents
