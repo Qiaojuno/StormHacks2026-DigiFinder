@@ -1,1 +1,1 @@
-# StormHacks2026-BirdBox
+# StormHacks2026-DigiFinder

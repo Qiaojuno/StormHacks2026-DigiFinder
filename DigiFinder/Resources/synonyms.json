@@ -1,0 +1,4 @@
+{ "synonyms": { "whole bean": ["beans", "wb"], "peanut butter": ["pb", "peanut spread"] },
+  "destinations": { "customerService": ["customer service", "information", "service desk", "help"],
+                    "checkout": ["checkout", "self checkout", "express", "lane", "cash"] },
+  "extraProducts": [ { "code": "", "brand": "Store Brand", "name": "Dark Roast", "quantity": "300 g", "aisle": "coffee" } ] }

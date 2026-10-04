@@ -1,0 +1,533 @@
+{
+  "coffee": {
+    "aisleWords": [
+      "coffee",
+      "tea"
+    ],
+    "productWords": [
+      "dark roast",
+      "medium roast",
+      "whole bean",
+      "ground",
+      "starbucks",
+      "nescafe",
+      "folgers",
+      "nespresso",
+      "maxwell house",
+      "tim hortons",
+      "great value",
+      "black rifle coffee company",
+      "president s choice",
+      "javvy",
+      "trader joe s",
+      "nestle",
+      "cafe bustelo",
+      "kirkland signature",
+      "kirkland",
+      "ground",
+      "medium",
+      "dark",
+      "vanilla",
+      "espresso",
+      "caramel",
+      "latte",
+      "mocha",
+      "whole",
+      "hazelnut"
+    ],
+    "visualClasses": [
+      "Coffee"
+    ],
+    "adjacent": [
+      "tea",
+      "breakfast"
+    ],
+    "offTags": [
+      "en:coffees",
+      "en:ground-coffees",
+      "en:coffee-beans",
+      "en:instant-coffees",
+      "en:coffee-capsules"
+    ]
+  },
+  "tea": {
+    "aisleWords": [
+      "tea",
+      "coffee"
+    ],
+    "productWords": [
+      "lipton",
+      "celestial seasonings",
+      "bigelow",
+      "tetley",
+      "twinings",
+      "arizona",
+      "traditional medicinals",
+      "pure leaf",
+      "trader joe s",
+      "h e b",
+      "tazo",
+      "snapple",
+      "great value",
+      "yogi",
+      "stash",
+      "herbal",
+      "ginger",
+      "bags",
+      "lemon",
+      "chamomile",
+      "grey",
+      "earl",
+      "orange",
+      "mint",
+      "latte"
+    ],
+    "visualClasses": [],
+    "adjacent": [
+      "coffee"
+    ],
+    "offTags": [
+      "en:teas",
+      "en:herbal-teas",
+      "en:green-teas",
+      "en:black-teas"
+    ]
+  },
+  "breakfast": {
+    "aisleWords": [
+      "cereal",
+      "breakfast"
+    ],
+    "productWords": [
+      "kellogg s",
+      "general mills",
+      "quaker",
+      "post",
+      "cheerios",
+      "kashi",
+      "nature s path",
+      "purely elizabeth",
+      "great value",
+      "millville",
+      "bob s red mill",
+      "trader joe s",
+      "malt o meal",
+      "wegmans",
+      "kroger",
+      "flakes",
+      "instant",
+      "chocolate",
+      "frosted",
+      "almond",
+      "vanilla",
+      "blueberry",
+      "rolled",
+      "butter",
+      "toasted"
+    ],
+    "visualClasses": [],
+    "adjacent": [
+      "spreads",
+      "coffee"
+    ],
+    "offTags": [
+      "en:breakfast-cereals",
+      "en:mueslis",
+      "en:granolas",
+      "en:oatmeals",
+      "en:porridge"
+    ]
+  },
+  "spreads": {
+    "aisleWords": [
+      "peanut butter",
+      "jam",
+      "spreads",
+      "honey"
+    ],
+    "productWords": [
+      "great value",
+      "skippy",
+      "jif",
+      "trader joe s",
+      "smucker s",
+      "kirkland",
+      "kirkland signature",
+      "american dream",
+      "bonne maman",
+      "justin s",
+      "local hive",
+      "kraft",
+      "wedderspoon",
+      "compliments",
+      "wegmans",
+      "almond",
+      "crunchy",
+      "strawberry",
+      "smooth",
+      "confiture",
+      "beurre",
+      "raspberry",
+      "hazelnut",
+      "orange",
+      "chocolate"
+    ],
+    "visualClasses": [],
+    "adjacent": [
+      "breakfast",
+      "bakery"
+    ],
+    "offTags": [
+      "en:peanut-butters",
+      "en:nut-butters",
+      "en:jams",
+      "en:honeys",
+      "en:hazelnut-spreads"
+    ]
+  },
+  "pasta": {
+    "aisleWords": [
+      "pasta",
+      "sauce",
+      "italian"
+    ],
+    "productWords": [
+      "barilla",
+      "great value",
+      "heinz",
+      "meijer",
+      "trader joe s",
+      "ronzoni",
+      "wegmans",
+      "delallo",
+      "catelli",
+      "nissin",
+      "de cecco",
+      "maruchan",
+      "shoprite",
+      "market pantry",
+      "creamette",
+      "macaroni",
+      "enriched",
+      "cheese",
+      "rigate",
+      "basil",
+      "tortellini",
+      "spinach",
+      "linguine",
+      "thin",
+      "rigatoni"
+    ],
+    "visualClasses": [],
+    "adjacent": [
+      "canned"
+    ],
+    "offTags": [
+      "en:pastas",
+      "en:pasta-sauces",
+      "en:tomato-sauces"
+    ]
+  },
+  "canned": {
+    "aisleWords": [
+      "canned",
+      "soup",
+      "beans"
+    ],
+    "productWords": [
+      "great value",
+      "campbell s",
+      "del monte",
+      "meijer",
+      "bumble bee",
+      "harris teeter",
+      "starkist",
+      "lowes foods",
+      "market pantry",
+      "kroger",
+      "southern home",
+      "dole",
+      "progresso",
+      "wegmans",
+      "food club",
+      "syrup",
+      "water",
+      "broth",
+      "sliced",
+      "condensed",
+      "corn",
+      "juice",
+      "pineapple",
+      "peas",
+      "beef"
+    ],
+    "visualClasses": [
+      "Tin can"
+    ],
+    "adjacent": [
+      "pasta"
+    ],
+    "offTags": [
+      "en:canned-foods",
+      "en:canned-vegetables",
+      "en:canned-soups",
+      "en:baked-beans"
+    ]
+  },
+  "snacks": {
+    "aisleWords": [
+      "snacks",
+      "chips",
+      "crackers"
+    ],
+    "productWords": [
+      "lay s",
+      "doritos",
+      "pringles",
+      "ruffles",
+      "great value",
+      "trader joe s",
+      "kettle",
+      "clancy s",
+      "tostitos",
+      "h e b",
+      "herr s",
+      "old dutch",
+      "miss vickie s",
+      "cheetos",
+      "boulder canyon",
+      "sea",
+      "cheddar",
+      "white",
+      "cream",
+      "sour",
+      "onion",
+      "butter",
+      "jalapeno",
+      "lime",
+      "salted"
+    ],
+    "visualClasses": [
+      "Snack",
+      "Cookie"
+    ],
+    "adjacent": [
+      "beverages"
+    ],
+    "offTags": [
+      "en:chips-and-fries",
+      "en:crisps",
+      "en:crackers",
+      "en:popcorn",
+      "en:pretzels"
+    ]
+  },
+  "beverages": {
+    "aisleWords": [
+      "beverages",
+      "drinks",
+      "juice",
+      "water",
+      "pop",
+      "soda"
+    ],
+    "productWords": [
+      "coca cola",
+      "pepsi",
+      "meijer",
+      "monster",
+      "winn dixie",
+      "zevia",
+      "dr pepper",
+      "red bull",
+      "ahold",
+      "great value",
+      "mountain dew",
+      "food lion",
+      "hannaford",
+      "canada dry",
+      "rockstar",
+      "lime",
+      "raspberry",
+      "caffeine",
+      "grape",
+      "grapefruit",
+      "purified",
+      "mango",
+      "pineapple",
+      "watermelon",
+      "unsweetened"
+    ],
+    "visualClasses": [
+      "Juice",
+      "Bottle",
+      "Drink"
+    ],
+    "adjacent": [
+      "snacks"
+    ],
+    "offTags": [
+      "en:sodas",
+      "en:juices",
+      "en:waters",
+      "en:energy-drinks"
+    ]
+  },
+  "produce": {
+    "aisleWords": [
+      "produce",
+      "fruit",
+      "vegetables"
+    ],
+    "productWords": [
+      "great value",
+      "trader joe s",
+      "del monte",
+      "h e b",
+      "wegmans",
+      "president s choice",
+      "usda",
+      "dole",
+      "driscoll s",
+      "kroger",
+      "raley s",
+      "harris teeter",
+      "meijer",
+      "good gather",
+      "sunset",
+      "tomatoes",
+      "diced",
+      "blueberries",
+      "sauce",
+      "italian",
+      "crushed",
+      "broccoli",
+      "roasted",
+      "peas",
+      "stewed"
+    ],
+    "visualClasses": [
+      "Fruit",
+      "Vegetable",
+      "Banana",
+      "Apple",
+      "Orange",
+      "Tomato",
+      "Broccoli",
+      "Carrot",
+      "Potato",
+      "Lemon"
+    ],
+    "adjacent": [
+      "bakery"
+    ],
+    "offTags": [
+      "en:fruits",
+      "en:vegetables",
+      "en:fresh-fruits",
+      "en:fresh-vegetables"
+    ]
+  },
+  "bakery": {
+    "aisleWords": [
+      "bakery",
+      "bread"
+    ],
+    "productWords": [
+      "trader joe s",
+      "hostess",
+      "great value",
+      "the bakery",
+      "meijer",
+      "aunt millie s",
+      "tastykake",
+      "franz",
+      "two bite",
+      "target stores",
+      "duncan hines",
+      "entenmann s",
+      "marketside",
+      "wegmans",
+      "kroger",
+      "enriched",
+      "hamburger",
+      "frosted",
+      "dog",
+      "apple",
+      "lemon",
+      "creme",
+      "pumpkin",
+      "pancake",
+      "vanilla"
+    ],
+    "visualClasses": [
+      "Bread",
+      "Baked goods",
+      "Cake",
+      "Muffin",
+      "Donut",
+      "Bagel",
+      "Croissant"
+    ],
+    "adjacent": [
+      "produce",
+      "spreads"
+    ],
+    "offTags": [
+      "en:breads",
+      "en:sliced-breads",
+      "en:pastries",
+      "en:cakes"
+    ]
+  },
+  "dairy": {
+    "aisleWords": [
+      "dairy",
+      "milk",
+      "cheese",
+      "yogurt"
+    ],
+    "productWords": [
+      "great value",
+      "chobani",
+      "dannon",
+      "kraft",
+      "meijer",
+      "trader joe s",
+      "tillamook",
+      "kroger",
+      "wegmans",
+      "market pantry",
+      "organic valley",
+      "crystal farms",
+      "lucerne",
+      "friendly farms",
+      "yoplait",
+      "lowfat",
+      "nonfat",
+      "low",
+      "vanilla",
+      "half",
+      "skim",
+      "colby",
+      "plain",
+      "parmesan",
+      "sliced"
+    ],
+    "visualClasses": [
+      "Milk",
+      "Cheese",
+      "Dairy Product"
+    ],
+    "adjacent": [
+      "bakery"
+    ],
+    "offTags": [
+      "en:dairies",
+      "en:milks",
+      "en:cheeses",
+      "en:yogurts",
+      "en:butters"
+    ]
+  }
+}

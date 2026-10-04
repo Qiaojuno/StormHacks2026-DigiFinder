@@ -60,3 +60,14 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+## DigiFinder
+DerivedData/
+DigiFinder/Resources/Secrets.plist
+*.sqlite
+*.mlpackage
+*.pt
+.venv/
+build_out/
+.DS_Store
+.swiftpm/

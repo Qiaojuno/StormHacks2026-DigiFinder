@@ -1,0 +1,77 @@
+{
+  "coffee": {
+    "offTags": ["en:coffees", "en:ground-coffees", "en:coffee-beans", "en:instant-coffees", "en:coffee-capsules"],
+    "usdaCategories": ["Coffee"],
+    "aisleWords": ["coffee", "tea"],
+    "adjacent": ["tea", "breakfast"],
+    "extraWords": ["dark roast", "medium roast", "whole bean", "ground"],
+    "visualClasses": ["Coffee"]
+  },
+  "tea": {
+    "offTags": ["en:teas", "en:herbal-teas", "en:green-teas", "en:black-teas"],
+    "usdaCategories": ["Tea Bags"],
+    "aisleWords": ["tea", "coffee"],
+    "adjacent": ["coffee"]
+  },
+  "breakfast": {
+    "offTags": ["en:breakfast-cereals", "en:mueslis", "en:granolas", "en:oatmeals", "en:porridge"],
+    "usdaCategories": ["Cereal", "Granola, Muesli & Oatmeal"],
+    "aisleWords": ["cereal", "breakfast"],
+    "adjacent": ["spreads", "coffee"],
+    "visualClasses": []
+  },
+  "spreads": {
+    "offTags": ["en:peanut-butters", "en:nut-butters", "en:jams", "en:honeys", "en:hazelnut-spreads"],
+    "usdaCategories": ["Peanut & Other Nut Butters", "Jam, Jelly & Fruit Spreads", "Honey"],
+    "aisleWords": ["peanut butter", "jam", "spreads", "honey"],
+    "adjacent": ["breakfast", "bakery"]
+  },
+  "pasta": {
+    "offTags": ["en:pastas", "en:pasta-sauces", "en:tomato-sauces"],
+    "usdaCategories": ["Pasta by Shape & Type", "Pasta Sauces"],
+    "aisleWords": ["pasta", "sauce", "italian"],
+    "adjacent": ["canned"]
+  },
+  "canned": {
+    "offTags": ["en:canned-foods", "en:canned-vegetables", "en:canned-soups", "en:baked-beans"],
+    "usdaCategories": ["Canned Vegetables", "Canned Soup", "Canned & Bottled Beans"],
+    "aisleWords": ["canned", "soup", "beans"],
+    "adjacent": ["pasta"],
+    "visualClasses": ["Tin can"]
+  },
+  "snacks": {
+    "offTags": ["en:chips-and-fries", "en:crisps", "en:crackers", "en:popcorn", "en:pretzels"],
+    "usdaCategories": ["Chips, Pretzels & Snacks", "Crackers & Biscotti", "Popcorn, Peanuts, Seeds & Related Snacks"],
+    "aisleWords": ["snacks", "chips", "crackers"],
+    "adjacent": ["beverages"],
+    "visualClasses": ["Snack", "Cookie"]
+  },
+  "beverages": {
+    "offTags": ["en:sodas", "en:juices", "en:waters", "en:energy-drinks"],
+    "usdaCategories": ["Soda", "Fruit & Vegetable Juice, Nectars & Fruit Drinks", "Water"],
+    "aisleWords": ["beverages", "drinks", "juice", "water", "pop", "soda"],
+    "adjacent": ["snacks"],
+    "visualClasses": ["Juice", "Bottle", "Drink"]
+  },
+  "produce": {
+    "offTags": ["en:fruits", "en:vegetables", "en:fresh-fruits", "en:fresh-vegetables"],
+    "usdaCategories": ["Pre-Packaged Fruit & Vegetables"],
+    "aisleWords": ["produce", "fruit", "vegetables"],
+    "adjacent": ["bakery"],
+    "visualClasses": ["Fruit", "Vegetable", "Banana", "Apple", "Orange", "Tomato", "Broccoli", "Carrot", "Potato", "Lemon"]
+  },
+  "bakery": {
+    "offTags": ["en:breads", "en:sliced-breads", "en:pastries", "en:cakes"],
+    "usdaCategories": ["Breads & Buns", "Cakes, Cupcakes, Snack Cakes"],
+    "aisleWords": ["bakery", "bread"],
+    "adjacent": ["produce", "spreads"],
+    "visualClasses": ["Bread", "Baked goods", "Cake", "Muffin", "Donut", "Bagel", "Croissant"]
+  },
+  "dairy": {
+    "offTags": ["en:dairies", "en:milks", "en:cheeses", "en:yogurts", "en:butters"],
+    "usdaCategories": ["Milk", "Cheese", "Yogurt"],
+    "aisleWords": ["dairy", "milk", "cheese", "yogurt"],
+    "adjacent": ["bakery"],
+    "visualClasses": ["Milk", "Cheese", "Dairy Product"]
+  }
+}
