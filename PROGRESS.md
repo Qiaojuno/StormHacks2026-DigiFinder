@@ -239,3 +239,19 @@ xcodebuild -scheme DigiFinder -destination 'generic/platform=iOS Simulator' -der
   Credits at the very bottom (Google Gemini added, with the photo note; YOLOv8, Open Food Facts, USDA). Speech speed,
   voice, nearby mode, units, tones, danger vibrations, detail and the duplicate Debug button removed; on load every
   setting except "walkthrough heard" resets to its default so nothing hidden can stay changed.
+- Within reach no longer ends the search (owner decision, Gemini mode): "Coffee, within reach." + "Pick it up and
+  hold it out." → Confirm step, where `SessionGeminiFinder.runHeldCheck` asks Gemini (`checkHeld`: holding / isGoal /
+  name) every ~2 s. Holding the right item → "Got it: coffee." and done. Wrong item → "That's green tea, not coffee.
+  Put it back." and back to the search (tracked box dropped, Gemini guides again). Not holding → "Pick it up and hold
+  it out." every ~10 s, never gives up; walking ~4 s without it → back to the search. Perception now keeps every
+  frame as the latest for Gemini photos (the hold-up step runs no Vision). Debug finder line shows the held check.
+- False stairs fix (owner report: random things announced as stairs): `detectStairsStrict` needs 3 matching rises
+  (was 2) on BOTH halves of the path at about the same distance (shelves, boxes, cart bases fail this);
+  `GeometryStairsTracker` confirms after ~1 s of sightings with the distance not growing (0.4 s when YOLO "Stairs"
+  agrees; one labeled frame no longer confirms; gaps > 0.3 s restart). YOLO "Stairs" counts at 60% (was 30%), also
+  for muting a danger alert. Debug "floor/stairs" line shows the reason. Short 2-step stairs may now be missed.
+- Alert ranges shortened (owner: alerts fired too far away): barrier 3 m → 2 m, people/carts approaching 2 m in both
+  profiles (store was 4 m, general 2.5 m), overhang 2.5 m → 1.5 m. Table stays 0.8 m; wet floor sign unchanged.
+- Barrier and approaching people/carts back to 2.7 m (owner decision); overhang stays 1.5 m, table 0.8 m.
+- No search ever gives up (owner decision), in a store or anywhere else: the 60 s "I couldn't find X." is removed
+  (`nearbyGiveUp` gone). Only the user ends a search: volume down, a new item, or holding the right item.

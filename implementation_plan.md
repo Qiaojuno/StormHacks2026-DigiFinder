@@ -657,8 +657,8 @@ Danger (§5.3) and stairs (§5.4) run underneath every phase.
 6. Label = YOLO box on Stream B overlapping the projected nearest points; else "Obstacle".
 
 **Threat level, not proximity (owner decision).** The app supplements the cane, so being close never alerts by itself. Each obstacle in the path (|x| ≤ 0.35 m) is scored from its own motion and what YOLO says it is:
-- **High → vibrate + speak:** something moving toward the user on its own: closing speed minus the user's walking (~1 m/s) ≥ 0.4 m/s for known movers (person, cart, stroller, wheelchair, bicycle, dog…) or ≥ 0.8 m/s for unlabeled shapes, contact within 2.5 s and 4 m.
-- **Low → speak only, no vibration:** while walking, a chest/head-height obstacle that doesn't reach the floor (open cabinet door, sign, shelf edge; the cane passes under it), contact within 2 s and 2.5 m.
+- **High → vibrate + speak:** something moving toward the user on its own: closing speed minus the user's walking (~1 m/s) ≥ 0.4 m/s for known movers (person, cart, stroller, wheelchair, bicycle, dog…) or ≥ 0.8 m/s for unlabeled shapes, contact within 2.5 s and 2.7 m (owner decision; store profile).
+- **Low → speak only, no vibration:** while walking, a chest/head-height obstacle that doesn't reach the floor (open cabinet door, sign, shelf edge; the cane passes under it), contact within 2 s and 1.5 m.
 - **None:** walls, shelves, tables and chairs (YOLO labels them; they still only alert if they move toward the user), boxes, standing people the cane will touch, things off to the side, anything within 0.8 m of a user who is standing or sitting still.
 - Never while rotating > 1.5 rad/s.
 
@@ -668,7 +668,7 @@ Danger (§5.3) and stairs (§5.4) run underneath every phase.
 |---|---|---|
 | In path | \|x\| ≤ 0.35 m now | where it will be at contact (x + sideways speed × TTC) within 0.25 m: someone crossing in front doesn't alert, someone cutting in does |
 | Approach (mover / other) | ≥ 0.4 / ≥ 0.8 m/s | ≥ 0.8 / ≥ 1.2 m/s |
-| Contact within | 2.5 s, 4 m | 1.5 s, 2.5 m |
+| Contact within | 2.5 s, 2.7 m | 1.5 s, 2.7 m |
 | Frames in a row | 3 | 5 |
 | Cooldown per obstacle | 5 s | 10 s |
 | Crowd (≥ 4 people in view) | no change | only alert when contact is within 1 s |

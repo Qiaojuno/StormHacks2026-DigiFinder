@@ -9,7 +9,9 @@ final class StairsDetector {
     /// Lanyard swing makes the leveled profile unreliable: skip those frames (keeps the confirmation streak).
     static let maxRotation = 1.5
     static let yoloLabel = "stairs"
-    static let yoloMinConfidence: Float = 0.3
+    /// Owner report (false stairs): the weak OIV7 "Stairs" class only counts at 60% (was 30%), and it only speeds up
+    /// a confirmation the LiDAR profile already agrees with.
+    static let yoloMinConfidence: Float = 0.6
     /// "Nearby": the YOLO box center sits in the middle of the image, where the profile looks.
     static let yoloBand = 0.2...0.8
     /// Debug profile refresh interval (seconds).
@@ -31,6 +33,8 @@ final class StairsDetector {
     /// This frame's reading (before confirmation).
     private(set) var latest: StairsObservation?
     private(set) var profile: [SafetyStairsProfileBin] = []
+    /// Why this frame is or isn't stairs (debug overlay).
+    private(set) var reason = ""
 
     /// Returns an observation to announce via `.stairs`: the first sighting of a staircase, then the ~1 m update
     /// (distance ≤ 1.2 m). At most two per staircase.
@@ -43,14 +47,16 @@ final class StairsDetector {
         floorY = learnFloor(pts)
         guard let fy = floorY else {
             latest = nil
+            reason = "no floor"
             return announce(tracker.walked(steps: walked, t: t))
         }
-        var obs = detectStairs(pts, floorY: fy)
+        var (obs, why) = detectStairsStrict(pts, floorY: fy)
+        reason = why
         // Stairs going down are hard to see from chest height (the profile can't tell a drop from a floor it simply
         // doesn't see), so they're only announced when YOLO sees "Stairs" too.
         let yolo = Self.yoloSeesStairs(detections)
         if yolo { lastYoloStairs = t }
-        if let o = obs, !o.up, t - lastYoloStairs > Self.downNeedsYoloWithin { obs = nil }
+        if let o = obs, !o.up, t - lastYoloStairs > Self.downNeedsYoloWithin { obs = nil; reason = "edge down, no Stairs label" }
         latest = obs
         if t - lastProfileTime >= Self.profileInterval || t < lastProfileTime {
             lastProfileTime = t

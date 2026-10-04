@@ -137,9 +137,11 @@ final class BarrierAlertTests: XCTestCase {
         XCTAssertTrue(BarrierAlertRule.check([], floorY: -1.3).reason.contains("columns"))
     }
 
-    func testFenceThreeMetersAwayCounts() {
-        XCTAssertEqual(BarrierAlertRule.find(wall(z: 2.9, yFrom: -1.0, yTo: -0.25), floorY: -1.3)?.distance ?? 0, 2.9,
+    func testFenceWithinRangeCounts() {
+        XCTAssertEqual(BarrierAlertRule.find(wall(z: 1.9, yFrom: -1.0, yTo: -0.25), floorY: -1.3)?.distance ?? 0, 1.9,
                        accuracy: 0.01)
+        XCTAssertNotNil(BarrierAlertRule.find(wall(z: 2.6, yFrom: -1.0, yTo: -0.25), floorY: -1.3), "within 2.7 m")
+        XCTAssertNil(BarrierAlertRule.find(wall(z: 3.4, yFrom: -1.0, yTo: -0.25), floorY: -1.3), "too far (owner: 2.7 m)")
     }
 
     func testWallIsNot() {

@@ -176,7 +176,10 @@ final class SafetyController: SafetyService, @unchecked Sendable {
             }
             // Stairs never vibrate (§5.4): risers of a known up-staircase, or a "Stairs" label, aren't danger.
             if r.emergency, let o = r.obstacle {
+                // Only a confident "Stairs" label (or LiDAR stairs) may silence an alert: the weak OIV7 class must not
+                // mute a real obstacle.
                 let isStairsLabel = debugLabel.label.lowercased() == "stairs"
+                    && latest.contains { $0.label.lowercased() == "stairs" && $0.confidence >= StairsDetector.yoloMinConfidence }
                 let onKnownStairs = stairs.latest.map { $0.up && abs($0.distance - o.distance) < Self.stairsDangerMargin } ?? false
                 if isStairsLabel || onKnownStairs { r.emergency = false }
             }
@@ -295,6 +298,7 @@ final class SafetyController: SafetyService, @unchecked Sendable {
 
             snap.floorY = stairs.floorY
             snap.stairs = stairs.latest
+            snap.stairsReason = stairs.reason
             snap.stairsProfile = stairs.profile
             return out
         }

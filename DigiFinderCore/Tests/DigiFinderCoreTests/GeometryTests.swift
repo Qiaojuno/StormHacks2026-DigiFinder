@@ -206,7 +206,11 @@ final class GeometryDangerTests: XCTestCase {
         // Person walking toward a still user: high threat.
         XCTAssertEqual(k(ThreatInput(distance: 2, x: 0, closing: 1.2, walking: false, grounded: true, label: "Person")), .approaching)
         // Rolling cart while the user walks: closing 1.0 (user) + 0.8 (cart).
-        XCTAssertEqual(k(ThreatInput(distance: 3, x: 0.1, closing: 1.8, walking: true, grounded: true, label: "Cart")), .approaching)
+        XCTAssertEqual(k(ThreatInput(distance: 1.9, x: 0.1, closing: 1.8, walking: true, grounded: true, label: "Cart")), .approaching)
+        // Owner decision: nothing alerts from farther than 2.7 m.
+        XCTAssertEqual(k(ThreatInput(distance: 3, x: 0.1, closing: 1.8, walking: true, grounded: true, label: "Cart")), .none)
+        // Overhang: 1.5 m at most.
+        XCTAssertEqual(k(ThreatInput(distance: 2.0, x: 0, closing: 1.0, walking: true, grounded: false)), .none)
         // Unknown shape needs more approach speed than a person.
         XCTAssertEqual(k(ThreatInput(distance: 1.4, x: 0, closing: 0.6, walking: false, grounded: true, label: nil)), .none)
         XCTAssertEqual(k(ThreatInput(distance: 1.4, x: 0, closing: 0.6, walking: false, grounded: true, label: "Person")), .approaching)
@@ -256,5 +260,78 @@ final class GeometryDangerTests: XCTestCase {
             (0..<10).map { i in Vec3(x: Float(i) * 0.06 - 0.27, y: -1.3 - 0.36, z: z) }
         }
         XCTAssertEqual(detectStairs(near + lower, floorY: -1.3)?.up, false)
+    }
+}
+
+/// Owner report: random things were called stairs. Stricter rule: 3 rises, both halves of the path, ~1 s approaching.
+final class StairsStrictTests: XCTestCase {
+    /// Floor then `rises` steps of 0.18 m every 0.3 m, starting at `start`, across x in `xs`.
+    private func stairs(start: Float = 1.5, rises: Int, xs: [Float] = stride(from: Float(-0.35), through: 0.35, by: 0.05).map { $0 }) -> [Vec3] {
+        var pts: [Vec3] = []
+        var z: Float = 0.55
+        while z < start + Float(rises) * 0.3 + 0.6 {
+            let step = z < start ? 0 : min(rises, Int((z - start) / 0.3) + 1)
+            for x in xs { pts.append(Vec3(x: x, y: -1.3 + Float(step) * 0.18, z: z)) }
+            z += 0.05
+        }
+        return pts.filter { $0.y < -0.4 }
+    }
+
+    func testRealStaircaseIsStairs() {
+        let r = detectStairsStrict(stairs(rises: 4), floorY: -1.3)
+        XCTAssertEqual(r.obs?.up, true, r.reason)
+    }
+
+    func testTwoStepsAreNotEnough() {
+        XCTAssertNil(detectStairsStrict(stairs(rises: 2), floorY: -1.3).obs, "a shelf base and kick plate look like this")
+    }
+
+    func testStepsOnOneSideOnlyAreNotStairs() {
+        let shelf = stairs(rises: 4, xs: stride(from: Float(0.05), through: 0.35, by: 0.05).map { $0 })
+        let floorLeft = stairs(rises: 0, xs: stride(from: Float(-0.35), through: -0.05, by: 0.05).map { $0 })
+        let r = detectStairsStrict(shelf + floorLeft, floorY: -1.3)
+        XCTAssertNil(r.obs)
+        XCTAssertEqual(r.reason, "one side only (shelf?)")
+    }
+
+    private func obs(_ d: Float) -> StairsObservation { StairsObservation(up: true, distance: d, steps: 4, more: false) }
+
+    /// Frames every 0.1 s from `t0`, the distance shrinking 0.1 m per frame (walking toward it). Returns the first
+    /// announcement and when it came.
+    private func approach(_ t: inout GeometryStairsTracker, from t0: Double, yolo: Bool) -> (GeometryStairsAnnouncement, Double)? {
+        for i in 0..<20 {
+            let time = t0 + Double(i) * 0.1
+            if let a = t.update(obs(3.0 - Float(i) * 0.1), yoloStairs: yolo, t: time) { return (a, time - t0) }
+        }
+        return nil
+    }
+
+    func testConfirmsAfterOneSecondApproaching() {
+        var t = GeometryStairsTracker()
+        let r = approach(&t, from: 0, yolo: false)
+        XCTAssertEqual(r?.1 ?? 0, 1.0, accuracy: 0.01)
+    }
+
+    func testTheLabelOnlySpeedsItUp() {
+        var t = GeometryStairsTracker()
+        XCTAssertNil(t.update(obs(3.0), yoloStairs: true, t: 0), "one frame with the label is not enough")
+        var u = GeometryStairsTracker()
+        XCTAssertEqual(approach(&u, from: 0, yolo: true)?.1 ?? 0, 0.4, accuracy: 0.01)
+    }
+
+    func testMovingAwayIsNotConfirmed() {
+        var t = GeometryStairsTracker()
+        var fired = false
+        for i in 0..<20 {
+            if t.update(obs(1.0 + Float(i) * 0.1), yoloStairs: false, t: Double(i) * 0.1) != nil { fired = true }
+        }
+        XCTAssertFalse(fired)
+    }
+
+    func testFlickerResetsTheClock() {
+        var t = GeometryStairsTracker()
+        _ = t.update(obs(3.0), yoloStairs: false, t: 0)
+        _ = t.update(nil, yoloStairs: false, t: 0.5)
+        XCTAssertNil(t.update(obs(2.9), yoloStairs: false, t: 1.0), "gap > 0.3 s: start over")
     }
 }

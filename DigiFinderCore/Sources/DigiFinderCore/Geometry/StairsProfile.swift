@@ -11,6 +11,10 @@ public struct GeometryStairsParams: Equatable {
     public var minPointsPerBin = 8
     /// Bins within this height band form one tread / floor plateau.
     public var flatTolerance: Float = 0.06
+    /// Owner report (random things called stairs): a staircase needs this many matching rises (was 2).
+    public var minRises = 3
+    /// Lateral strip the profile reads (m, + right).
+    public var xMin: Float = -0.4, xMax: Float = 0.4
 
     public init(riseMin: Float = 0.13, riseMax: Float = 0.22, runMin: Float = 0.22, runMax: Float = 0.35,
                 runTolerance: Float = 0.1, stepHeight: Float = 0.18, binSize: Float = 0.1, minPointsPerBin: Int = 8,
@@ -34,7 +38,7 @@ public func detectStairs(_ pts: [Vec3], floorY: Float) -> StairsObservation? {
 public func detectStairs(_ pts: [Vec3], floorY: Float, params p: GeometryStairsParams) -> StairsObservation? {
     guard floorY.isFinite, p.binSize > 0 else { return nil }
     var bins = [Int: [Float]]()
-    for q in pts where abs(q.x) < 0.4 && q.y < -0.4 && q.z > 0.3 && q.z < 5 && q.y.isFinite {
+    for q in pts where q.x > p.xMin && q.x < p.xMax && q.y < -0.4 && q.z > 0.3 && q.z < 5 && q.y.isFinite {
         bins[Int(q.z / p.binSize), default: []].append(q.y)
     }
     let profile = bins.keys.sorted().compactMap { k -> StairsBin? in
@@ -67,7 +71,7 @@ public func detectStairs(_ pts: [Vec3], floorY: Float, params p: GeometryStairsP
             guard rise >= p.riseMin, rise <= p.riseMax, spacingOK else { break }
             rises += 1; lastIndex = i; lastRiseZ = z
         }
-        guard rises >= 2 else { return nil }
+        guard rises >= p.minRises else { return nil }
         let top = plateaus[lastIndex].h
         let last = plateaus[lastIndex]
         // The top isn't visible when the profile ends on a tread (not a landing) near the range limit, or when the
@@ -92,6 +96,25 @@ public func detectStairs(_ pts: [Vec3], floorY: Float, params p: GeometryStairsP
         return StairsObservation(up: false, distance: floorEnd, steps: steps, more: false)
     }
     return nil
+}
+
+/// Stricter check (owner report: random things were called stairs). Up-stairs must show the same steps on the left
+/// and right halves of the path (shelves, boxes, a cart base rarely do) at about the same distance. Returns the
+/// observation or why not (debug overlay).
+public func detectStairsStrict(_ pts: [Vec3], floorY: Float) -> (obs: StairsObservation?, reason: String) {
+    guard let full = detectStairs(pts, floorY: floorY) else { return (nil, "no steps") }
+    guard full.up else { return (full, "edge down") }
+    var half = GeometryStairsParams()
+    half.minPointsPerBin = 4
+    half.xMin = -0.4; half.xMax = 0
+    let left = detectStairs(pts, floorY: floorY, params: half)
+    half.xMin = 0; half.xMax = 0.4
+    let right = detectStairs(pts, floorY: floorY, params: half)
+    guard let l = left, let r = right, l.up, r.up else { return (nil, "one side only (shelf?)") }
+    guard abs(l.distance - full.distance) <= 0.4, abs(r.distance - full.distance) <= 0.4 else {
+        return (nil, "sides don't line up")
+    }
+    return (full, String(format: "steps up %.1f m", full.distance))
 }
 
 struct StairsBin { var k: Int; var h: Float }
@@ -172,34 +195,48 @@ public enum GeometryStairsAnnouncement: Equatable {
     case near(StairsObservation)
 }
 
-/// Confirm (YOLO "Stairs" nearby in one frame, or 3 consecutive frames alone), announce once per staircase,
-/// then once more at ~1 m (from LiDAR, or counted down with the pedometer once the near floor is out of view).
+/// Confirm, announce once per staircase, then once more at ~1 m (from LiDAR, or counted down with the pedometer once
+/// the near floor is out of view). Owner report (false stairs): seen for `confirmSeconds` (YOLO "Stairs" agreeing:
+/// `yoloConfirmSeconds`) with the distance not growing (the user walks toward it); gaps up to `maxGap` are allowed.
 public struct GeometryStairsTracker {
-    public var framesToConfirm: Int
+    public var confirmSeconds: Double = 1.0
+    public var yoloConfirmSeconds: Double = 0.4
+    public var maxGap: Double = 0.3
+    /// The distance may grow at most this much while confirming (LiDAR noise).
+    public var distanceSlack: Float = 0.2
     public var nearDistance: Float
     /// Seconds without stairs before the next detection counts as a new staircase.
     public var forgetAfter: Double
     public var stepLength: Float
     public private(set) var current: StairsObservation?
-    private var streak = 0
+    private var since: (t: Double, distance: Float)?
     private var lastSeen: Double?
     private var announcedFirst = false
     private var announcedNear = false
 
-    public init(framesToConfirm: Int = 3, nearDistance: Float = 1.2, forgetAfter: Double = 5, stepLength: Float = 0.7) {
-        self.framesToConfirm = max(framesToConfirm, 1); self.nearDistance = nearDistance
+    public init(nearDistance: Float = 1.2, forgetAfter: Double = 5, stepLength: Float = 0.7) {
+        self.nearDistance = nearDistance
         self.forgetAfter = forgetAfter; self.stepLength = stepLength
     }
 
     public mutating func update(_ obs: StairsObservation?, yoloStairs: Bool, t: Double) -> GeometryStairsAnnouncement? {
         if let seen = lastSeen, t - seen > forgetAfter { reset() }
-        guard let o = obs else { streak = 0; return nil }
+        guard let o = obs else {
+            if let seen = lastSeen, t - seen > maxGap { since = nil }
+            return nil
+        }
         if let c = current, announcedFirst, c.up != o.up { reset() }
-        streak += 1
+        if let s = since, let seen = lastSeen, t - seen > maxGap || t < s.t { since = nil }
+        let start = since ?? (t, o.distance)
+        since = start
         lastSeen = t
         current = o
         if !announcedFirst {
-            guard yoloStairs || streak >= framesToConfirm else { return nil }
+            guard o.distance <= start.distance + distanceSlack else {     // moving away / shifting: not stairs
+                since = (t, o.distance)
+                return nil
+            }
+            guard t - start.t >= (yoloStairs ? yoloConfirmSeconds : confirmSeconds) else { return nil }
             announcedFirst = true
             if o.distance <= nearDistance { announcedNear = true }
             return .first(o)
@@ -223,7 +260,7 @@ public struct GeometryStairsTracker {
     }
 
     public mutating func reset() {
-        current = nil; streak = 0; lastSeen = nil; announcedFirst = false; announcedNear = false
+        current = nil; since = nil; lastSeen = nil; announcedFirst = false; announcedNear = false
     }
 }
 

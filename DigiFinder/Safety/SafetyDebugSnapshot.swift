@@ -63,6 +63,8 @@ struct SafetyDebugSnapshot: Equatable {
     var floorY: Float?
     /// This frame's stairs reading (before confirmation).
     var stairs: StairsObservation?
+    /// Why it is or isn't stairs ("one side only (shelf?)", "steps up 2.4 m", …).
+    var stairsReason = ""
     /// The last announced observation.
     var lastStairsAnnounced: StairsObservation?
     /// Floor profile ahead (~2 Hz).
@@ -96,6 +98,7 @@ struct SafetyDebugSnapshot: Equatable {
             stairsLine += "none"
         }
         stairsLine += " · profile \(stairsProfile.count) bins"
+        if !stairsReason.isEmpty { stairsLine += " · \(stairsReason)" }
         out.append(stairsLine)
         out.append("barrier: \(barrierReason.isEmpty ? "–" : barrierReason)")
         return out

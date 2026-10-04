@@ -35,7 +35,6 @@ enum SessionTuning {
     static let confirmWalkAway = 4.0
     /// Still not stopped this long after asking → ask again.
     static let contextReask = 20.0
-    static let nearbyGiveUp = 60.0
     /// Farther item directions: when the direction changes, else at most this often.
     static let itemInterval = 3.0
     /// Gemini search hints ("Coffee sign at 10 o'clock."): at most this often, and only when the text changed.

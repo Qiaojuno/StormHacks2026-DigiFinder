@@ -31,7 +31,8 @@ public enum ThreatTuning {
     public static let approachMaxDistance: Float = 4
     /// Overhead obstacles alert within this time to contact (s) and distance (m), only while walking.
     public static let overheadTTC: Float = 2.0
-    public static let overheadMaxDistance: Float = 2.5
+    /// Owner decision: 1.5 m (2.5 m fired too far away).
+    public static let overheadMaxDistance: Float = 1.5
     /// Standing or sitting still: nothing closer than this alerts (table, chair, own hands).
     public static let stillMinDistance: Float = 0.8
 }
@@ -71,11 +72,11 @@ public struct ThreatProfile: Equatable {
 
     /// Grocery store: sensitive (the original thresholds).
     public static let store = ThreatProfile(name: "store", inPathHalfWidth: 0.35, approachMinMover: 0.4, approachMinOther: 0.8,
-                                            approachTTC: 2.5, approachMaxDistance: 4, consecutiveFrames: 3, cooldown: 5,
+                                            approachTTC: 2.5, approachMaxDistance: 2.7, consecutiveFrames: 3, cooldown: 5,
                                             collisionCourse: false, crowdDamping: false)
     /// Anywhere else: calm. Verify on device (§10) in a busy hallway.
     public static let general = ThreatProfile(name: "general", inPathHalfWidth: 0.25, approachMinMover: 0.8,
-                                              approachMinOther: 1.2, approachTTC: 1.5, approachMaxDistance: 2.5,
+                                              approachMinOther: 1.2, approachTTC: 1.5, approachMaxDistance: 2.7,
                                               consecutiveFrames: 5, cooldown: 10, collisionCourse: true,
                                               crowdDamping: true, crowdPeople: 4, crowdTTC: 1.0)
 }
@@ -234,8 +235,8 @@ public struct TableAlertRule {
 /// waist height with open space above it. Walls and shelves fill the space above, so they don't count. Same alert as
 /// tables: one vibration + "Barrier ahead, steer to N o'clock", once per approach.
 public struct BarrierAlertRule {
-    /// Owner decision: buzz from ~3 m (2 m was too late).
-    public static let maxDistance: Float = 3.0
+    /// Owner decision: buzz from ~2.7 m.
+    public static let maxDistance: Float = 2.7
     public static let minDistance: Float = 0.3
     /// Path width checked, as 10 cm columns across ±0.35 m.
     public static let halfWidth: Float = 0.35

@@ -61,13 +61,15 @@ final class SessionNearbyTests: XCTestCase {
         XCTAssertTrue(found.contains(.markDone(phone)))
     }
 
-    func testGeneralPlaceGivesUpAfterAMinute() {
+    /// Owner decision: no search gives up, in a store or anywhere else.
+    func testGeneralPlaceNeverGivesUp() {
         var h = SessionHarness()
         _ = h.session.setNearbyMode(true)
         h.send(.routed(.product(Goal(product: "phone", visualClass: "Mobile phone"), .unspecified)))
-        let e = said(h.advance(61))
+        let e = said(h.advance(300))
         XCTAssertTrue(e.contains("Stop and look around. I need context."))
-        XCTAssertTrue(e.contains("I couldn't find phone."))
+        XCTAssertFalse(e.contains { $0.contains("couldn't find") })
+        XCTAssertNotNil(h.state.goal)
     }
 
     func testManualOverridesWin() {

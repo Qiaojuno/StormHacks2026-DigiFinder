@@ -568,20 +568,12 @@ extension ShoppingSession {
         }
     }
 
-    /// Gemini-guided search. Owner decisions: in a grocery store it never gives up (elsewhere ~60 s with no sighting →
-    /// "I couldn't find X."). Every ~15 s without a sighting: "Stop and look around. I need context."; once the user
+    /// Gemini-guided search. Owner decision: it never gives up, anywhere; only the user ends it (volume down, a new
+    /// item, or holding the right one). Every ~15 s without a sighting: "Stop and look around. I need context."; once the user
     /// has stood still ~4 s (two Gemini scans): "Keep going." A sighting answers it instead.
     mutating func nearbyTimers() {
         let now = state.now
         let anchor = max(state.stepStartedAt, state.itemSeenAt ?? -Double.infinity, state.placeDecidedAt ?? -Double.infinity)
-        let inStore = (state.placeOverride ?? state.place) == .store
-        if !inStore, now - anchor >= SessionTuning.nearbyGiveUp, let g = state.goal {
-            state.marks.contextAskedAt = nil
-            announce(SessionPhrases.notFoundNearby(name(g)))
-            out.append(.chime(.done))
-            advanceToNext()
-            return
-        }
         if let asked = state.marks.contextAskedAt {
             if state.isWalking {
                 state.marks.contextStillSince = nil
